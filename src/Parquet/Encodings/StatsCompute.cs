@@ -10,10 +10,132 @@ static class StatsCompute {
         if(stats == null)
             return;
 
+        if(typeof(T) == typeof(float) || typeof(T) == typeof(double)) {
+            ComputeFloating(data, stats);
+            return;
+        }
+
         MinMax<T>(data, out T min, out T max);
         stats.MinValue = min;
         stats.MaxValue = max;
 
+    }
+
+    /// <summary>
+    /// Floating point min/max as the format requires: NaN never a bound (no bounds when every value is NaN), a zero
+    /// min written as -0.0 and a zero max as +0.0.
+    /// </summary>
+    private static void ComputeFloating<T>(ReadOnlySpan<T> data, DataColumnStatistics stats) where T : struct, INumber<T> {
+        bool any = false;
+        T min = default, max = default;
+        foreach(T v in data) {
+            if(T.IsNaN(v))
+                continue;
+            if(!any) {
+                min = max = v;
+                any = true;
+                continue;
+            }
+            if(v < min)
+                min = v;
+            if(v > max)
+                max = v;
+        }
+        if(!any) {
+            stats.MinValue = null;
+            stats.MaxValue = null;
+            return;
+        }
+        if(T.IsZero(min))
+            min = -T.Zero;
+        if(T.IsZero(max))
+            max = T.Zero;
+        stats.MinValue = min;
+        stats.MaxValue = max;
+    }
+
+    /// <summary>Min/max of INT32 values annotated unsigned, compared as unsigned and kept as their bits.</summary>
+    public static void ComputeUnsigned(ReadOnlySpan<int> data, DataColumnStatistics? stats) {
+        if(stats == null)
+            return;
+        if(data.IsEmpty) {
+            stats.MinValue = stats.MaxValue = null;
+            return;
+        }
+        uint min = (uint)data[0], max = min;
+        foreach(int v in data) {
+            if((uint)v < min)
+                min = (uint)v;
+            if((uint)v > max)
+                max = (uint)v;
+        }
+        stats.MinValue = (int)min;
+        stats.MaxValue = (int)max;
+    }
+
+    /// <summary>Min/max of INT64 values annotated unsigned, compared as unsigned and kept as their bits.</summary>
+    public static void ComputeUnsigned(ReadOnlySpan<long> data, DataColumnStatistics? stats) {
+        if(stats == null)
+            return;
+        if(data.IsEmpty) {
+            stats.MinValue = stats.MaxValue = null;
+            return;
+        }
+        ulong min = (ulong)data[0], max = min;
+        foreach(long v in data) {
+            if((ulong)v < min)
+                min = (ulong)v;
+            if((ulong)v > max)
+                max = (ulong)v;
+        }
+        stats.MinValue = (long)min;
+        stats.MaxValue = (long)max;
+    }
+
+    /// <summary>Min/max of byte arrays in unsigned byte-wise order (strings, binary, fixed, UUIDs).</summary>
+    public static void Compute(ReadOnlySpan<ReadOnlyMemory<byte>> data, DataColumnStatistics? stats) {
+        if(stats == null)
+            return;
+        if(data.IsEmpty) {
+            stats.MinValue = stats.MaxValue = null;
+            return;
+        }
+        ReadOnlyMemory<byte> min = data[0], max = min;
+        foreach(ReadOnlyMemory<byte> v in data) {
+            if(v.Span.SequenceCompareTo(min.Span) < 0)
+                min = v;
+            if(v.Span.SequenceCompareTo(max.Span) > 0)
+                max = v;
+        }
+        // like parquet-cpp's default, no bounds rather than footers holding very long values
+        if(min.Length > MaxBoundBytes || max.Length > MaxBoundBytes) {
+            stats.MinValue = stats.MaxValue = null;
+            return;
+        }
+        stats.MinValue = min.ToArray();
+        stats.MaxValue = max.ToArray();
+    }
+
+    internal const int MaxBoundBytes = 4096;
+
+    /// <summary>
+    /// UTF-16 strings in Unicode code point order, which is UTF-8 byte order (the format's order for strings): code
+    /// unit order differs only where a surrogate meets a code unit from U+E000 to U+FFFF.
+    /// </summary>
+    internal static int CompareCodePoints(ReadOnlySpan<char> a, ReadOnlySpan<char> b) {
+        int n = Math.Min(a.Length, b.Length);
+        for(int i = 0; i < n; i++) {
+            char x = a[i], y = b[i];
+            if(x == y)
+                continue;
+            if(x >= 0xD800 && y >= 0xD800)
+                return Fixup(x).CompareTo(Fixup(y));
+            return x.CompareTo(y);
+        }
+        return a.Length.CompareTo(b.Length);
+
+        // surrogates (D800-DFFF) sort after E000-FFFF
+        static int Fixup(char c) => c >= 0xE000 ? c - 0x800 : c + 0x2000;
     }
 
     public static void Compute(ReadOnlySpan<string> data, DataColumnStatistics? stats) {
@@ -39,17 +161,17 @@ static class StatsCompute {
             string b = data[i + 1];
 
             // 1 comparison to order the pair
-            if(a.AsSpan().SequenceCompareTo(b.AsSpan()) <= 0) {
+            if(CompareCodePoints(a, b) <= 0) {
                 // a <= b: a is candidate for min, b for max
-                if(a.AsSpan().SequenceCompareTo(min.AsSpan()) < 0)
+                if(CompareCodePoints(a, min) < 0)
                     min = a;
-                if(b.AsSpan().SequenceCompareTo(max.AsSpan()) > 0)
+                if(CompareCodePoints(b, max) > 0)
                     max = b;
             } else {
                 // b < a: b is candidate for min, a for max
-                if(b.AsSpan().SequenceCompareTo(min.AsSpan()) < 0)
+                if(CompareCodePoints(b, min) < 0)
                     min = b;
-                if(a.AsSpan().SequenceCompareTo(max.AsSpan()) > 0)
+                if(CompareCodePoints(a, max) > 0)
                     max = a;
             }
         }
@@ -57,9 +179,9 @@ static class StatsCompute {
         // handle the odd trailing element
         if(i < len) {
             string last = data[i];
-            if(last.AsSpan().SequenceCompareTo(min.AsSpan()) < 0)
+            if(CompareCodePoints(last, min) < 0)
                 min = last;
-            else if(last.AsSpan().SequenceCompareTo(max.AsSpan()) > 0)
+            else if(CompareCodePoints(last, max) > 0)
                 max = last;
         }
 
@@ -87,24 +209,24 @@ static class StatsCompute {
             ReadOnlyMemory<char> a = data[i];
             ReadOnlyMemory<char> b = data[i + 1];
 
-            if(a.Span.SequenceCompareTo(b.Span) <= 0) {
-                if(a.Span.SequenceCompareTo(min.Span) < 0)
+            if(CompareCodePoints(a.Span, b.Span) <= 0) {
+                if(CompareCodePoints(a.Span, min.Span) < 0)
                     min = a;
-                if(b.Span.SequenceCompareTo(max.Span) > 0)
+                if(CompareCodePoints(b.Span, max.Span) > 0)
                     max = b;
             } else {
-                if(b.Span.SequenceCompareTo(min.Span) < 0)
+                if(CompareCodePoints(b.Span, min.Span) < 0)
                     min = b;
-                if(a.Span.SequenceCompareTo(max.Span) > 0)
+                if(CompareCodePoints(a.Span, max.Span) > 0)
                     max = a;
             }
         }
 
         if(i < len) {
             ReadOnlyMemory<char> last = data[i];
-            if(last.Span.SequenceCompareTo(min.Span) < 0)
+            if(CompareCodePoints(last.Span, min.Span) < 0)
                 min = last;
-            else if(last.Span.SequenceCompareTo(max.Span) > 0)
+            else if(CompareCodePoints(last.Span, max.Span) > 0)
                 max = last;
         }
 
@@ -289,11 +411,20 @@ static class StatsCompute {
         int minIdx = 0;
         int maxIdx = 0;
 
+        // UUIDs compare as their RFC 4122 (big-endian) bytes, unsigned; Guid.CompareTo orders differently
+        Span<byte> cur = stackalloc byte[16], lo = stackalloc byte[16], hi = stackalloc byte[16];
+        data[0].TryWriteBytes(lo, bigEndian: true, out _);
+        data[0].TryWriteBytes(hi, bigEndian: true, out _);
         for(int i = 1; i < data.Length; i++) {
-            if(data[i].CompareTo(data[minIdx]) < 0)
+            data[i].TryWriteBytes(cur, bigEndian: true, out _);
+            if(cur.SequenceCompareTo(lo) < 0) {
                 minIdx = i;
-            if(data[i].CompareTo(data[maxIdx]) > 0)
+                cur.CopyTo(lo);
+            }
+            if(cur.SequenceCompareTo(hi) > 0) {
                 maxIdx = i;
+                cur.CopyTo(hi);
+            }
         }
 
         stats.MinValue = data[minIdx];

@@ -37,8 +37,12 @@ public class FixedLengthByteArrayTest {
         await reader.OpenRowGroupReader(0).ReadRawAsync<ReadOnlyMemory<byte>>(read, raw, defs, null);
         Assert.Equal(new[] { 1, 0, 1, 1 }, defs);
         Assert.Equal(values.Where(v => v != null).Select(v => v!), raw.Take(3).Select(r => r.ToArray()));
-        // 4 values of 4 bytes (or a dictionary of them), never a 4-byte length per value.
-        Assert.True(file.Length < 200);
+        // byte-wise bounds, as FIXED_LEN_BYTE_ARRAY sorts unsigned
+        Data.DataColumnStatistics st = reader.OpenRowGroupReader(0).GetStatistics(read)!;
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, (byte[])st.MinValue!);
+        Assert.Equal(new byte[] { 9, 9, 9, 9 }, (byte[])st.MaxValue!);
+        // 4 values of 4 bytes (or a dictionary of them), never a 4-byte length per value; plus those bounds.
+        Assert.True(file.Length < 260);
     }
 
     [Fact]
