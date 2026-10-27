@@ -22,15 +22,18 @@ static class StatsCompute {
     }
 
     /// <summary>
-    /// Floating point min/max as the format requires: NaN never a bound (no bounds when every value is NaN), a zero
-    /// min written as -0.0 and a zero max as +0.0.
+    /// Floating point min/max as the format requires: NaN never a bound (no bounds when every value is NaN) but counted,
+    /// a zero min written as -0.0 and a zero max as +0.0.
     /// </summary>
     private static void ComputeFloating<T>(ReadOnlySpan<T> data, DataColumnStatistics stats) where T : struct, INumber<T> {
         bool any = false;
+        long nans = 0;
         T min = default, max = default;
         foreach(T v in data) {
-            if(T.IsNaN(v))
+            if(T.IsNaN(v)) {
+                nans++;
                 continue;
+            }
             if(!any) {
                 min = max = v;
                 any = true;
@@ -41,6 +44,8 @@ static class StatsCompute {
             if(v > max)
                 max = v;
         }
+        // with TYPE_ORDER, nan_count is required for floating point columns, even when zero
+        stats.NanCount = nans;
         if(!any) {
             stats.MinValue = null;
             stats.MaxValue = null;
