@@ -41,6 +41,7 @@ public class ParquetReader : ParquetActor, IAsyncDisposable {
 
         //read metadata instantly, now
         _meta = await ReadMetadataAsync(cancellationToken, _parquetOptions.Decryption);
+        FooterLength = LastFooterLength;
         _thriftFooter = new ThriftFooter(_meta);
 
         InitRowGroupReaders();
@@ -118,6 +119,14 @@ public class ParquetReader : ParquetActor, IAsyncDisposable {
     /// Reader schema
     /// </summary>
     public ParquetSchema Schema => _thriftFooter!.CreateModelSchema(_parquetOptions);
+
+    /// <summary>
+    /// The leaf columns as stored (physical type, annotations, field IDs, levels), in file order.
+    /// </summary>
+    public IReadOnlyList<ColumnDescriptor> Columns => ColumnDescriptor.Of(_meta!.Schema);
+
+    /// <summary>Length of the footer in bytes, as stored before the trailing magic.</summary>
+    public int FooterLength { get; private set; }
 
     /// <summary>
     /// Internal parquet metadata

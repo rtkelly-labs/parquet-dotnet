@@ -43,6 +43,8 @@ public class ParquetActor {
         HasEncryptedFooter = encrypted;
     }
 
+    internal int LastFooterLength { get; private set; }
+
     /// <summary>The file ends in "PARE": its footer is encrypted.</summary>
     internal bool HasEncryptedFooter { get; private set; }
 
@@ -52,6 +54,7 @@ public class ParquetActor {
     internal async ValueTask<Parquet.Meta.FileMetaData> ReadMetadataAsync(CancellationToken cancellationToken = default,
         Encryption.ParquetDecryptionOptions? decryption = null) {
         int footerLength = await GoBeforeFooterAsync();
+        LastFooterLength = footerLength;
         byte[] footerData = await _fileStream.ReadBytesExactlyAsync(footerLength);
         if(HasEncryptedFooter) {
             (Meta.FileMetaData meta, Encryption.FileDecryptor decryptor) = Encryption.FileDecryptor.ReadEncryptedFooter(footerData, decryption);
