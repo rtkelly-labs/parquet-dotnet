@@ -1,0 +1,115 @@
+diff --git a/src/Parquet.Test/StatisticsDecodingTest.cs b/src/Parquet.Test/StatisticsDecodingTest.cs
+new file mode 100644
+index 0000000..518789e
+--- /dev/null
++++ b/src/Parquet.Test/StatisticsDecodingTest.cs
+@@ -0,0 +1,45 @@
++using System;
++using System.IO;
++using System.Threading.Tasks;
++using Parquet.Data;
++using Parquet.Schema;
++using Xunit;
++
++namespace Parquet.Test;
++
++/// <summary>Statistics read back as the column's CLR type, as its values are.</summary>
++public class StatisticsDecodingTest {
++
++    static async Task<DataColumnStatistics> StatisticsOf<T>(DataField field, params T[] values) where T : struct {
++        using var ms = new MemoryStream();
++        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms)) {
++            using ParquetRowGroupWriter rg = writer.CreateRowGroup();
++            await rg.WriteAsync<T>(field, values.AsMemory());
++        }
++        ms.Position = 0;
++        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
++        return reader.OpenRowGroupReader(0).GetStatistics(reader.Schema.GetDataFields()[0])!;
++    }
++
++    static async Task AssertBounds<T>(T min, T max) where T : struct {
++        DataColumnStatistics st = await StatisticsOf(new DataField<T>("c"), max, min);
++        Assert.Equal((object)min, st.MinValue);
++        Assert.Equal((object)max, st.MaxValue);
++    }
++
++    [Fact] public Task Bytes() => AssertBounds<byte>(1, 200);
++    [Fact] public Task Sbytes() => AssertBounds<sbyte>(-100, 100);
++    [Fact] public Task Shorts() => AssertBounds<short>(-30000, 30000);
++    [Fact] public Task Ushorts() => AssertBounds<ushort>(1, 60000);
++    [Fact] public Task Uints() => AssertBounds<uint>(1, uint.MaxValue);
++    [Fact] public Task Ulongs() => AssertBounds<ulong>(1, ulong.MaxValue);
++
++    [Fact]
++    public async Task Decimals_stored_as_int32_and_int64() {
++        DataColumnStatistics st32 = await StatisticsOf(new DecimalDataField("d", 5, 2), 123.45m, -1.5m);
++        Assert.Equal((-1.5m, 123.45m), ((decimal)st32.MinValue!, (decimal)st32.MaxValue!));
++
++        DataColumnStatistics st64 = await StatisticsOf(new DecimalDataField("d", 15, 3), 123456789.123m, 0.001m);
++        Assert.Equal((0.001m, 123456789.123m), ((decimal)st64.MinValue!, (decimal)st64.MaxValue!));
++    }
++}
+diff --git a/src/Parquet/Encodings/ParquetPlainEncoder.cs b/src/Parquet/Encodings/ParquetPlainEncoder.cs
+index 5554472..282fd13 100644
+--- a/src/Parquet/Encodings/ParquetPlainEncoder.cs
++++ b/src/Parquet/Encodings/ParquetPlainEncoder.cs
+@@ -309,11 +309,26 @@ static class ParquetPlainEncoder {
+             result = BitConverter.ToBoolean(value, 0);
+             return true;
+         }
++        // before INT32 and INT64, which decimals can be stored as
++        if(tse.IsDecimal()) {
++            result = TryDecodeDecimal(value, tse);
++            return true;
++        }
+         if(tse.Type == TType.INT32) {
+-            result = BitConverter.ToInt32(value, 0);
++            int i = BitConverter.ToInt32(value, 0);
++            // narrower and unsigned integers as the column's CLR type (see SchemaEncoder.GetSystemType)
++            result = IntegerBits(tse) switch {
++                (8, true) => (sbyte)i,
++                (8, false) => (byte)i,
++                (16, true) => (short)i,
++                (16, false) => (ushort)i,
++                (32, false) => (uint)i,
++                _ => i
++            };
+             return true;
+         } else if(tse.Type == TType.INT64) {
+-            result = BitConverter.ToInt64(value, 0);
++            long l = BitConverter.ToInt64(value, 0);
++            result = IntegerBits(tse) is (64, false) ? (ulong)l : l;
+             return true;
+         } else if(tse.Type == TType.INT96) {
+             if(value.Length == 12)
+@@ -324,9 +339,6 @@ static class ParquetPlainEncoder {
+             else
+                 result = null;
+             return true;
+-        } else if(tse.IsDecimal()) {
+-            result = TryDecodeDecimal(value, tse);
+-            return true;
+         } else if(tse.Type == TType.DOUBLE) {
+             result = BitConverter.ToDouble(value, 0);
+             return true;
+@@ -350,6 +362,20 @@ static class ParquetPlainEncoder {
+         return false;
+     }
+ 
++    private static (int bits, bool signed)? IntegerBits(SchemaElement tse) {
++        if(tse.LogicalType?.INTEGER is IntType it)
++            return (it.BitWidth, it.IsSigned);
++        return tse.ConvertedType switch {
++            ConvertedType.INT_8 => (8, true),
++            ConvertedType.UINT_8 => (8, false),
++            ConvertedType.INT_16 => (16, true),
++            ConvertedType.UINT_16 => (16, false),
++            ConvertedType.UINT_32 => (32, false),
++            ConvertedType.UINT_64 => (64, false),
++            _ => null
++        };
++    }
++
+     private static object TryDecodeDecimal(byte[] value, SchemaElement tse) {
+         switch(tse.Type) {
+             case TType.INT32:

@@ -1,0 +1,150 @@
+diff --git a/src/Parquet.Test/FixedLengthByteArrayTest.cs b/src/Parquet.Test/FixedLengthByteArrayTest.cs
+new file mode 100644
+index 0000000..6ddc5f5
+--- /dev/null
++++ b/src/Parquet.Test/FixedLengthByteArrayTest.cs
+@@ -0,0 +1,57 @@
++using System;
++using System.IO;
++using System.Linq;
++using System.Threading.Tasks;
++using Parquet.Schema;
++using Xunit;
++
++namespace Parquet.Test;
++
++public class FixedLengthByteArrayTest {
++
++    private static async Task<MemoryStream> WriteAsync(DataField field, byte[]?[] values) {
++        var ms = new MemoryStream();
++        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms)) {
++            using ParquetRowGroupWriter rg = writer.CreateRowGroup();
++            await rg.WriteAsync(field, values);
++        }
++        ms.Position = 0;
++        return ms;
++    }
++
++    [Fact]
++    public async Task Byte_arrays_of_a_fixed_length_round_trip_as_FIXED_LEN_BYTE_ARRAY() {
++        var field = new DataField<byte[]>("hash") { FixedLength = 4 };
++        byte[]?[] values = { new byte[] { 1, 2, 3, 4 }, null, new byte[] { 9, 9, 9, 9 }, new byte[] { 1, 2, 3, 4 } };
++        using MemoryStream file = await WriteAsync(field, values);
++
++        await using ParquetReader reader = await ParquetReader.CreateAsync(file, leaveStreamOpen: true);
++        Meta.SchemaElement se = reader.Metadata!.Schema[1];
++        Assert.Equal(Meta.Type.FIXED_LEN_BYTE_ARRAY, se.Type);
++        Assert.Equal(4, se.TypeLength);
++        DataField read = reader.Schema.DataFields[0];
++        Assert.Equal(4, read.FixedLength);
++
++        var raw = new ReadOnlyMemory<byte>[values.Length];
++        var defs = new int[values.Length];
++        await reader.OpenRowGroupReader(0).ReadRawAsync<ReadOnlyMemory<byte>>(read, raw, defs, null);
++        Assert.Equal(new[] { 1, 0, 1, 1 }, defs);
++        Assert.Equal(values.Where(v => v != null).Select(v => v!), raw.Take(3).Select(r => r.ToArray()));
++        // 4 values of 4 bytes (or a dictionary of them), never a 4-byte length per value.
++        Assert.True(file.Length < 200);
++    }
++
++    [Fact]
++    public async Task A_value_of_another_length_is_refused() {
++        var field = new DataField<byte[]>("hash") { FixedLength = 4 };
++        await Assert.ThrowsAsync<ParquetException>(() => WriteAsync(field, new byte[]?[] { new byte[] { 1, 2, 3 } }));
++    }
++
++    [Fact]
++    public async Task Variable_length_byte_arrays_are_unchanged() {
++        using MemoryStream file = await WriteAsync(new DataField<byte[]>("b"), new byte[]?[] { new byte[] { 1 }, new byte[] { 1, 2, 3 } });
++        await using ParquetReader reader = await ParquetReader.CreateAsync(file);
++        Assert.Equal(Meta.Type.BYTE_ARRAY, reader.Metadata!.Schema[1].Type);
++        Assert.Null(reader.Schema.DataFields[0].FixedLength);
++    }
++}
+diff --git a/src/Parquet/Encodings/ParquetPlainEncoder.cs b/src/Parquet/Encodings/ParquetPlainEncoder.cs
+index a73d42d..264cbb1 100644
+--- a/src/Parquet/Encodings/ParquetPlainEncoder.cs
++++ b/src/Parquet/Encodings/ParquetPlainEncoder.cs
+@@ -122,7 +122,10 @@ static class ParquetPlainEncoder {
+             StatsCompute.Compute(span, stats);
+         } else if(t == typeof(ReadOnlyMemory<byte>)) {
+             ReadOnlySpan<ReadOnlyMemory<byte>> span = sourceSpan.AsSpan<T, ReadOnlyMemory<byte>>();
+-            Encode(span, destination);
++            if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY)
++                EncodeFixed(span, destination, tse);
++            else
++                Encode(span, destination);
+             // todo: minmax
+         } else if(t == typeof(Guid)) {
+             ReadOnlySpan<Guid> span = sourceSpan.AsSpan<T, Guid>();
+@@ -339,6 +342,10 @@ static class ParquetPlainEncoder {
+                 result = value;
+                 return true;
+             }
++        else if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY && !tse.IsDecimal() && tse.LogicalType?.UUID == null) {
++            result = value;     // fixed[n] (and INTERVAL) as written
++            return true;
++        }
+ 
+         result = null;
+         return false;
+@@ -917,6 +924,16 @@ static class ParquetPlainEncoder {
+         }
+     }
+ 
++    /// <summary>FIXED_LEN_BYTE_ARRAY: the values back to back, no length prefix; each must be exactly the type length.</summary>
++    public static void EncodeFixed(ReadOnlySpan<ReadOnlyMemory<byte>> data, Stream destination, SchemaElement tse) {
++        int length = tse.TypeLength ?? throw new InvalidDataException($"type length must be set for {nameof(TType.FIXED_LEN_BYTE_ARRAY)}");
++        foreach(ReadOnlyMemory<byte> element in data) {
++            if(element.Length != length)
++                throw new ParquetException($"'{tse.Name}' is FIXED_LEN_BYTE_ARRAY({length}) but a value has {element.Length} bytes");
++            destination.Write(element.Span);
++        }
++    }
++
+     public static void Encode(ReadOnlySpan<Guid> data, Stream destination) {
+         foreach(Guid element in data) {
+             // Since .NET 8 there's a built-in support for big-endian encoding
+diff --git a/src/Parquet/Encodings/SchemaEncoder.cs b/src/Parquet/Encodings/SchemaEncoder.cs
+index 5d7ce28..526e771 100644
+--- a/src/Parquet/Encodings/SchemaEncoder.cs
++++ b/src/Parquet/Encodings/SchemaEncoder.cs
+@@ -349,6 +349,8 @@ static class SchemaEncoder {
+         df.IsNullable = isNullable;
+         df.IsArray = isArray;
+         df.SchemaElement = se;
++        if(se.Type == Type.FIXED_LEN_BYTE_ARRAY && systemType == typeof(byte[]))
++            df.FixedLength = se.TypeLength;
+         return true;
+     }
+ 
+@@ -567,7 +569,11 @@ static class SchemaEncoder {
+             tse.Precision = precision;
+             tse.Scale = scale;
+         } else if(st == typeof(byte[]) || st == typeof(ReadOnlyMemory<byte>)) {           // byte[]
+-            tse.Type = Type.BYTE_ARRAY;
++            if(field.FixedLength is int fixedLength) {
++                tse.Type = Type.FIXED_LEN_BYTE_ARRAY;
++                tse.TypeLength = fixedLength;
++            } else
++                tse.Type = Type.BYTE_ARRAY;
+         } else if(st == typeof(DateTime)) {                                               // DateTime
+             if(field is DateTimeDataField dfDateTime) {
+                 switch(dfDateTime.DateTimeFormat) {
+diff --git a/src/Parquet/Schema/DataField.cs b/src/Parquet/Schema/DataField.cs
+index 31e7a16..925a008 100644
+--- a/src/Parquet/Schema/DataField.cs
++++ b/src/Parquet/Schema/DataField.cs
+@@ -211,6 +211,12 @@ public class DataField : Field, ICloneable {
+         }
+     }
+ 
++    /// <summary>
++    /// For byte array fields: store every value as exactly this many bytes, as FIXED_LEN_BYTE_ARRAY (for example
++    /// Iceberg's <c>fixed[n]</c>); null for variable-length BYTE_ARRAY. Set when reading such a column.
++    /// </summary>
++    public int? FixedLength { get; set; }
++
+     internal bool IsCompatibleWith(Type structType) {
+         return structType == ClrType ||
+             (structType == typeof(ReadOnlyMemory<char>) && ClrType == typeof(string)) ||

@@ -1,0 +1,26 @@
+diff --git a/src/Parquet.Test/DataTypes/BigDecimalTest.cs b/src/Parquet.Test/DataTypes/BigDecimalTest.cs
+index 027c82c..7e65ccc 100644
+--- a/src/Parquet.Test/DataTypes/BigDecimalTest.cs
++++ b/src/Parquet.Test/DataTypes/BigDecimalTest.cs
+@@ -85,7 +85,7 @@ public class BigDecimalTest {
+         byte[] bytes = bd.GetBytes();
+ 
+         // GetBytes returns big-endian; reverse to little-endian for BigInteger
+-        byte[] littleEndian = bytes.Reverse().ToArray();
++        byte[] littleEndian = Enumerable.Reverse(bytes).ToArray();
+         BigInteger decoded = new BigInteger(littleEndian);
+         Assert.Equal(unscaled, decoded);
+     }
+diff --git a/src/Parquet.Test/Parquet.Test.csproj b/src/Parquet.Test/Parquet.Test.csproj
+index b414cbd..92990a9 100644
+--- a/src/Parquet.Test/Parquet.Test.csproj
++++ b/src/Parquet.Test/Parquet.Test.csproj
+@@ -2,7 +2,7 @@
+     <PropertyGroup>
+         <IsPackable>false</IsPackable>
+         <LangVersion>latest</LangVersion>
+-        <TargetFrameworks>net10.0</TargetFrameworks>
++        <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
+ 
+         <SignAssembly>true</SignAssembly>
+         <AssemblyOriginatorKeyFile>../fake.snk</AssemblyOriginatorKeyFile>

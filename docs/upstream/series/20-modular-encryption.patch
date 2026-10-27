@@ -1,0 +1,1760 @@
+diff --git a/src/Parquet.Test/EncryptionTest.cs b/src/Parquet.Test/EncryptionTest.cs
+new file mode 100644
+index 0000000..57729e7
+--- /dev/null
++++ b/src/Parquet.Test/EncryptionTest.cs
+@@ -0,0 +1,211 @@
++using System;
++using System.Collections.Generic;
++using System.IO;
++using System.Linq;
++using System.Text;
++using System.Threading.Tasks;
++using Parquet.Data;
++using Parquet.Encryption;
++using Parquet.Schema;
++using Parquet.Serialization;
++using Xunit;
++
++namespace Parquet.Test;
++
++/// <summary>
++/// Parquet modular encryption. The files in data/encryption were written by parquet-cpp (ParquetSharp 25.0.1.1): two
++/// row groups of 100 rows, several data pages per column chunk; id int64 0..199, name string "name{id % 10}" or null
++/// when id % 7 == 0. Footer key "0123456789012345" (metadata "kf"); the name column's key "1234567890123450"
++/// (metadata "kc1"); aad_prefix_aes256 uses a 32-byte key and the AAD prefix "file1", not stored.
++/// </summary>
++public class EncryptionTest : TestBase {
++
++    static readonly byte[] FooterKey = Encoding.ASCII.GetBytes("0123456789012345");
++    static readonly byte[] NameKey = Encoding.ASCII.GetBytes("1234567890123450");
++    static readonly byte[] Key256 = Encoding.ASCII.GetBytes("0123456789012345678901234567890a");
++
++    static readonly long[] Ids = Enumerable.Range(0, 200).Select(i => (long)i).ToArray();
++    static readonly string?[] Names = Ids.Select(i => i % 7 == 0 ? null : "name" + (i % 10)).ToArray();
++
++    static ParquetOptions Decrypt(byte[]? footerKey, Dictionary<string, byte[]>? columns = null, byte[]? aadPrefix = null) =>
++        new() { Decryption = new ParquetDecryptionOptions { FooterKey = footerKey, ColumnKeys = columns, AadPrefix = aadPrefix } };
++
++    static async Task<(List<long> ids, List<string?> names)> ReadAllAsync(Stream s, ParquetOptions options, bool names = true) {
++        await using ParquetReader reader = await ParquetReader.CreateAsync(s, options);
++        DataField[] fields = reader.Schema.GetDataFields();
++        var ids = new List<long>();
++        var result = new List<string?>();
++        foreach(ParquetRowGroupReader rg in reader.RowGroups) {
++            using RawColumnData<long> id = await rg.ReadRawColumnDataAsync<long>(fields[0]);
++            ids.AddRange(id.Values.ToArray());
++            if(!names)
++                continue;
++            using RawColumnData<ReadOnlyMemory<char>> name = await rg.ReadRawColumnDataAsync<ReadOnlyMemory<char>>(fields[1]);
++            int v = 0;
++            foreach(int d in name.DefinitionLevels)
++                result.Add(d == 0 ? null : name.Values[v++].ToString());
++        }
++        return (ids, result);
++    }
++
++    [Theory]
++    [InlineData("uniform")]
++    [InlineData("ctr")]
++    public async Task Reads_files_encrypted_with_the_footer_key(string file) {
++        using Stream s = OpenTestFile($"encryption/{file}.parquet");
++        (List<long> ids, List<string?> names) = await ReadAllAsync(s, Decrypt(FooterKey));
++        Assert.Equal(Ids, ids);
++        Assert.Equal(Names, names);
++    }
++
++    [Fact]
++    public async Task Reads_a_column_key_file() {
++        using Stream s = OpenTestFile("encryption/column_key.parquet");
++        (List<long> ids, List<string?> names) = await ReadAllAsync(s, Decrypt(FooterKey, new() { ["name"] = NameKey }));
++        Assert.Equal(Ids, ids);
++        Assert.Equal(Names, names);
++    }
++
++    [Fact]
++    public async Task Finds_keys_through_their_metadata() {
++        using Stream s = OpenTestFile("encryption/column_key.parquet");
++        var options = new ParquetOptions {
++            Decryption = new ParquetDecryptionOptions {
++                KeyRetriever = metadata => Encoding.ASCII.GetString(metadata ?? []) switch {
++                    "kf" => FooterKey,
++                    "kc1" => NameKey,
++                    _ => null
++                }
++            }
++        };
++        (List<long> ids, List<string?> names) = await ReadAllAsync(s, options);
++        Assert.Equal(Ids, ids);
++        Assert.Equal(Names, names);
++    }
++
++    [Fact]
++    public async Task A_column_without_its_key_cannot_be_read_but_the_others_can() {
++        using Stream s = OpenTestFile("encryption/column_key.parquet");
++        (List<long> ids, _) = await ReadAllAsync(s, Decrypt(FooterKey), names: false);
++        Assert.Equal(Ids, ids);
++
++        s.Position = 0;
++        ParquetException e = await Assert.ThrowsAsync<ParquetException>(() => ReadAllAsync(s, Decrypt(FooterKey)));
++        Assert.Contains("'name' is encrypted and no key was given for it", e.Message);
++    }
++
++    [Fact]
++    public async Task A_plaintext_footer_is_readable_without_keys() {
++        using Stream s = OpenTestFile("encryption/plaintext_footer.parquet");
++        await using(ParquetReader reader = await ParquetReader.CreateAsync(s)) {
++            Assert.Equal(new[] { "id", "name" }, reader.Schema.GetDataFields().Select(f => f.Name));
++            Assert.Equal(100, reader.RowGroups[0].RowCount);
++        }
++        s.Position = 0;
++        (List<long> ids, _) = await ReadAllAsync(s, new ParquetOptions(), names: false);
++        Assert.Equal(Ids, ids);
++
++        s.Position = 0;
++        (_, List<string?> names) = await ReadAllAsync(s, Decrypt(FooterKey, new() { ["name"] = NameKey }));
++        Assert.Equal(Names, names);
++
++        s.Position = 0;
++        ParquetException wrong = await Assert.ThrowsAsync<ParquetException>(() => ReadAllAsync(s, Decrypt(NameKey), names: false));
++        Assert.Contains("signature does not match", wrong.Message);
++    }
++
++    [Fact]
++    public async Task An_aad_prefix_that_is_not_stored_has_to_be_supplied() {
++        using Stream s = OpenTestFile("encryption/aad_prefix_aes256.parquet");
++        ParquetException missing = await Assert.ThrowsAsync<ParquetException>(() => ReadAllAsync(s, Decrypt(Key256)));
++        Assert.Contains("AAD prefix", missing.Message);
++
++        s.Position = 0;
++        await Assert.ThrowsAsync<ParquetException>(() => ReadAllAsync(s, Decrypt(Key256, aadPrefix: "file2"u8.ToArray())));
++
++        s.Position = 0;
++        (List<long> ids, List<string?> names) = await ReadAllAsync(s, Decrypt(Key256, aadPrefix: "file1"u8.ToArray()));
++        Assert.Equal(Ids, ids);
++        Assert.Equal(Names, names);
++    }
++
++    [Fact]
++    public async Task Wrong_or_missing_footer_key() {
++        using Stream s = OpenTestFile("encryption/uniform.parquet");
++        ParquetException missing = await Assert.ThrowsAsync<ParquetException>(() => ParquetReader.CreateAsync(s));
++        Assert.Contains("footer is encrypted", missing.Message);
++        s.Position = 0;
++        ParquetException wrong = await Assert.ThrowsAsync<ParquetException>(() => ParquetReader.CreateAsync(s, Decrypt(NameKey)));
++        Assert.Contains("decryption failed", wrong.Message);
++    }
++
++    class Record {
++        public long Id { get; set; }
++        public string? Name { get; set; }
++        public List<int>? Tags { get; set; }
++    }
++
++    static Record[] Records(int n) => Enumerable.Range(0, n).Select(i => new Record {
++        Id = i, Name = i % 7 == 0 ? null : "name" + (i % 10), Tags = i % 5 == 0 ? null : Enumerable.Range(0, i % 4).ToList()
++    }).ToArray();
++
++    public static IEnumerable<object[]> Modes() {
++        yield return new object[] { "uniform", new ParquetEncryptionOptions { FooterKey = FooterKey } };
++        yield return new object[] { "ctr", new ParquetEncryptionOptions { FooterKey = FooterKey, UseCtrForPages = true } };
++        yield return new object[] { "column keys", new ParquetEncryptionOptions {
++            FooterKey = FooterKey,
++            ColumnKeys = new Dictionary<string, ParquetColumnKey> { ["Name"] = new(NameKey, "kc1"u8.ToArray()), ["Tags.list.element"] = new(Key256) } } };
++        yield return new object[] { "plaintext footer", new ParquetEncryptionOptions {
++            FooterKey = FooterKey, PlaintextFooter = true,
++            ColumnKeys = new Dictionary<string, ParquetColumnKey> { ["Name"] = new(NameKey) } } };
++        yield return new object[] { "aad prefix", new ParquetEncryptionOptions { FooterKey = Key256, AadPrefix = "f"u8.ToArray(), StoreAadPrefix = false } };
++    }
++
++    [Theory]
++    [MemberData(nameof(Modes))]
++    public async Task Round_trip(string mode, ParquetEncryptionOptions encryption) {
++        Record[] data = Records(1000);
++        using var ms = new MemoryStream();
++        await ParquetSerializer.SerializeAsync(data, ms, new ParquetOptions { RowGroupSize = 300, Encryption = encryption });
++
++        byte[] bytes = ms.ToArray();
++        string magic = mode == "plaintext footer" ? "PAR1" : "PARE";
++        Assert.Equal(magic, Encoding.ASCII.GetString(bytes, 0, 4));
++        Assert.Equal(magic, Encoding.ASCII.GetString(bytes, bytes.Length - 4, 4));
++        // nothing readable in the encrypted parts
++        Assert.DoesNotContain("name3", Encoding.ASCII.GetString(bytes));
++
++        var keys = new Dictionary<string, byte[]> { ["Name"] = NameKey, ["Tags.list.element"] = Key256 };
++        ms.Position = 0;
++        IList<Record> back = (await ParquetSerializer.DeserializeAsync<Record>(ms, new ParquetOptions {
++            Decryption = new ParquetDecryptionOptions {
++                FooterKey = encryption.FooterKey, ColumnKeys = keys, AadPrefix = encryption.StoreAadPrefix ? null : encryption.AadPrefix
++            }
++        })).Data;
++        Assert.Equal(data.Length, back.Count);
++        for(int i = 0; i < data.Length; i++) {
++            Assert.Equal(data[i].Id, back[i].Id);
++            Assert.Equal(data[i].Name, back[i].Name);
++            Assert.Equal(data[i].Tags, back[i].Tags);
++        }
++    }
++
++    [Fact]
++    public async Task Tampering_is_detected() {
++        using var ms = new MemoryStream();
++        await ParquetSerializer.SerializeAsync(Records(100), ms, new ParquetOptions {
++            Encryption = new ParquetEncryptionOptions { FooterKey = FooterKey }
++        });
++        byte[] bytes = ms.ToArray();
++        bytes[40] ^= 1;     // inside the first column chunk
++        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(bytes), Decrypt(FooterKey));
++        await Assert.ThrowsAsync<ParquetException>(async () => {
++            using RawColumnData<long> _ = await reader.RowGroups[0].ReadRawColumnDataAsync<long>(reader.Schema.GetDataFields()[0]);
++        });
++    }
++
++    [Fact]
++    public async Task Keys_must_be_aes_sized() =>
++        await Assert.ThrowsAsync<ArgumentException>(() => ParquetWriter.CreateAsync(new ParquetSchema(new DataField<int>("a")),
++            new MemoryStream(), new ParquetOptions { Encryption = new ParquetEncryptionOptions { FooterKey = new byte[10] } }));
++}
+diff --git a/src/Parquet.Test/data/encryption/aad_prefix_aes256.parquet b/src/Parquet.Test/data/encryption/aad_prefix_aes256.parquet
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb2e9a5ddf5b33fffdc9dbdb3c3b31adb128f29a
+GIT binary patch
+literal 7198
+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
+TV(`M5@TSoIcZ4+l{TciZ!)7Z^
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/Parquet.Test/data/encryption/column_key.parquet b/src/Parquet.Test/data/encryption/column_key.parquet
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5d8f61a32535a9e9d6341bf9ec1c47b6665d569
+GIT binary patch
+literal 5728
+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
+Q7*B?Wh44qI1@D&s1BZ0M8UO$Q
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/Parquet.Test/data/encryption/ctr.parquet b/src/Parquet.Test/data/encryption/ctr.parquet
+new file mode 100644
+index 0000000000000000000000000000000000000000..c02bd095ddf0974e3e56167643f3ea0d7c72362f
+GIT binary patch
+literal 6494
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/Parquet.Test/data/encryption/plaintext_footer.parquet b/src/Parquet.Test/data/encryption/plaintext_footer.parquet
+new file mode 100644
+index 0000000000000000000000000000000000000000..c5a9e12ee1fc4b938cf839f372c48b099be0aa1e
+GIT binary patch
+literal 5809
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/Parquet.Test/data/encryption/uniform.parquet b/src/Parquet.Test/data/encryption/uniform.parquet
+new file mode 100644
+index 0000000000000000000000000000000000000000..144aa1d34652ff4953b9ee9fa2e2946c9c3a915c
+GIT binary patch
+literal 7202
+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
+YH}O(!v7=`qzObS5-zB8_-`~Oi0VuOMOaK4?
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/Parquet/Encryption/AesModules.cs b/src/Parquet/Encryption/AesModules.cs
+new file mode 100644
+index 0000000..85c8d3b
+--- /dev/null
++++ b/src/Parquet/Encryption/AesModules.cs
+@@ -0,0 +1,133 @@
++using System;
++using System.Buffers.Binary;
++using System.Security.Cryptography;
++
++namespace Parquet.Encryption;
++
++/// <summary>Module types, bound into each module's AAD (parquet-format Encryption.md, "Module AAD").</summary>
++enum ModuleType : byte {
++    Footer = 0,
++    ColumnMetaData = 1,
++    DataPage = 2,
++    DictionaryPage = 3,
++    DataPageHeader = 4,
++    DictionaryPageHeader = 5,
++    ColumnIndex = 6,
++    OffsetIndex = 7,
++    BloomFilterHeader = 8,
++    BloomFilterBitset = 9,
++}
++
++/// <summary>
++/// Encrypted modules: a 4-byte little-endian length, then for AES-GCM a 12-byte nonce, the ciphertext and a 16-byte
++/// tag; for AES-CTR a 12-byte nonce and the ciphertext.
++/// </summary>
++static class AesModules {
++    public const int NonceLength = 12;
++    public const int TagLength = 16;
++    public const int LengthPrefix = 4;
++    public const int GcmOverhead = LengthPrefix + NonceLength + TagLength;
++    public const int CtrOverhead = LengthPrefix + NonceLength;
++
++    public static void CheckKey(byte[] key, string what) {
++        if(key.Length is not (16 or 24 or 32))
++            throw new ArgumentException($"{what} must be 16, 24 or 32 bytes, not {key.Length}");
++    }
++
++    /// <summary>The AAD of a module: the file AAD, the module type, then the ordinals that apply to it (little-endian int16s).</summary>
++    public static byte[] Aad(byte[] fileAad, ModuleType type, int rowGroup = -1, int column = -1, int page = -1) {
++        int extra = 1 + (rowGroup >= 0 ? 2 : 0) + (column >= 0 ? 2 : 0) + (page >= 0 ? 2 : 0);
++        byte[] aad = new byte[fileAad.Length + extra];
++        fileAad.CopyTo(aad, 0);
++        int i = fileAad.Length;
++        aad[i++] = (byte)type;
++        foreach(int ordinal in new[] { rowGroup, column, page }) {
++            if(ordinal < 0)
++                continue;
++            if(ordinal > short.MaxValue)
++                throw new NotSupportedException($"encrypted files hold at most {short.MaxValue + 1} row groups, columns and pages per column chunk");
++            BinaryPrimitives.WriteInt16LittleEndian(aad.AsSpan(i), (short)ordinal);
++            i += 2;
++        }
++        return aad;
++    }
++
++    public static byte[] EncryptGcm(byte[] key, ReadOnlySpan<byte> plaintext, byte[] aad) {
++        byte[] module = new byte[GcmOverhead + plaintext.Length];
++        BinaryPrimitives.WriteInt32LittleEndian(module, module.Length - LengthPrefix);
++        Span<byte> nonce = module.AsSpan(LengthPrefix, NonceLength);
++        RandomNumberGenerator.Fill(nonce);
++        using var gcm = new AesGcm(key, TagLength);
++        gcm.Encrypt(nonce, plaintext,
++            module.AsSpan(LengthPrefix + NonceLength, plaintext.Length),
++            module.AsSpan(LengthPrefix + NonceLength + plaintext.Length, TagLength), aad);
++        return module;
++    }
++
++    /// <summary>Decrypts a GCM module (with its length prefix).</summary>
++    public static byte[] DecryptGcm(byte[] key, ReadOnlySpan<byte> module, byte[] aad) {
++        int length = CheckedLength(module, NonceLength + TagLength);
++        ReadOnlySpan<byte> body = module.Slice(LengthPrefix, length);
++        byte[] plaintext = new byte[length - NonceLength - TagLength];
++        using var gcm = new AesGcm(key, TagLength);
++        try {
++            gcm.Decrypt(body.Slice(0, NonceLength), body.Slice(NonceLength, plaintext.Length),
++                body.Slice(NonceLength + plaintext.Length, TagLength), plaintext, aad);
++        } catch(AuthenticationTagMismatchException e) {
++            throw new ParquetException("Parquet decryption failed: wrong key, wrong AAD prefix, or a tampered file", e);
++        }
++        return plaintext;
++    }
++
++    /// <summary>The GCM tag of <paramref name="plaintext"/> under the given nonce (plaintext footer signatures).</summary>
++    public static byte[] GcmTag(byte[] key, ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> plaintext, byte[] aad) {
++        byte[] ciphertext = new byte[plaintext.Length];
++        byte[] tag = new byte[TagLength];
++        using var gcm = new AesGcm(key, TagLength);
++        gcm.Encrypt(nonce, plaintext, ciphertext, tag, aad);
++        return tag;
++    }
++
++    public static byte[] EncryptCtr(byte[] key, ReadOnlySpan<byte> plaintext) {
++        byte[] module = new byte[CtrOverhead + plaintext.Length];
++        BinaryPrimitives.WriteInt32LittleEndian(module, module.Length - LengthPrefix);
++        Span<byte> nonce = module.AsSpan(LengthPrefix, NonceLength);
++        RandomNumberGenerator.Fill(nonce);
++        Ctr(key, nonce, plaintext, module.AsSpan(CtrOverhead));
++        return module;
++    }
++
++    public static byte[] DecryptCtr(byte[] key, ReadOnlySpan<byte> module) {
++        int length = CheckedLength(module, NonceLength);
++        byte[] plaintext = new byte[length - NonceLength];
++        Ctr(key, module.Slice(LengthPrefix, NonceLength), module.Slice(CtrOverhead, plaintext.Length), plaintext);
++        return plaintext;
++    }
++
++    /// <summary>The module's length (after the prefix), checked against the bytes there are.</summary>
++    public static int CheckedLength(ReadOnlySpan<byte> module, int minimum) {
++        if(module.Length < LengthPrefix)
++            throw new ParquetException("encrypted module is truncated");
++        int length = BinaryPrimitives.ReadInt32LittleEndian(module);
++        if(length < minimum || length > module.Length - LengthPrefix)
++            throw new ParquetException($"encrypted module length {length} is invalid");
++        return length;
++    }
++
++    /// <summary>AES-CTR with a 16-byte counter block: the 12-byte nonce, then a 4-byte big-endian counter from 1.</summary>
++    private static void Ctr(byte[] key, ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> input, Span<byte> output) {
++        const int block = 16;
++        int blocks = (input.Length + block - 1) / block;
++        byte[] counters = new byte[blocks * block];
++        for(int b = 0; b < blocks; b++) {
++            Span<byte> c = counters.AsSpan(b * block, block);
++            nonce.CopyTo(c);
++            BinaryPrimitives.WriteUInt32BigEndian(c.Slice(NonceLength), (uint)(b + 1));
++        }
++        using var aes = Aes.Create();
++        aes.Key = key;
++        byte[] stream = aes.EncryptEcb(counters, PaddingMode.None);
++        for(int i = 0; i < input.Length; i++)
++            output[i] = (byte)(input[i] ^ stream[i]);
++    }
++}
+diff --git a/src/Parquet/Encryption/FileCrypto.cs b/src/Parquet/Encryption/FileCrypto.cs
+new file mode 100644
+index 0000000..eaaee25
+--- /dev/null
++++ b/src/Parquet/Encryption/FileCrypto.cs
+@@ -0,0 +1,264 @@
++using System;
++using System.Collections.Generic;
++using System.IO;
++using System.Linq;
++using System.Security.Cryptography;
++using Parquet.Meta;
++using Parquet.Meta.Proto;
++
++namespace Parquet.Encryption;
++
++/// <summary>Encrypts one column chunk's pages and headers.</summary>
++sealed class ColumnEncryptor {
++    private readonly byte[] _key;
++    private readonly byte[] _fileAad;
++    private readonly int _rowGroup;
++    private readonly int _column;
++    private readonly bool _ctr;
++
++    public ColumnEncryptor(byte[] key, byte[] fileAad, int rowGroup, int column, bool ctr) =>
++        (_key, _fileAad, _rowGroup, _column, _ctr) = (key, fileAad, rowGroup, column, ctr);
++
++    public byte[] Header(ReadOnlySpan<byte> header, bool dictionary, int page) =>
++        AesModules.EncryptGcm(_key, header, dictionary
++            ? AesModules.Aad(_fileAad, ModuleType.DictionaryPageHeader, _rowGroup, _column)
++            : AesModules.Aad(_fileAad, ModuleType.DataPageHeader, _rowGroup, _column, page));
++
++    public byte[] Page(ReadOnlySpan<byte> data, bool dictionary, int page) =>
++        _ctr
++            ? AesModules.EncryptCtr(_key, data)
++            : AesModules.EncryptGcm(_key, data, dictionary
++                ? AesModules.Aad(_fileAad, ModuleType.DictionaryPage, _rowGroup, _column)
++                : AesModules.Aad(_fileAad, ModuleType.DataPage, _rowGroup, _column, page));
++}
++
++/// <summary>Decrypts one column chunk's pages and headers.</summary>
++sealed class ColumnDecryptor {
++    private readonly byte[] _key;
++    private readonly byte[] _fileAad;
++    private readonly int _rowGroup;
++    private readonly int _column;
++    private readonly bool _ctr;
++
++    public ColumnDecryptor(byte[] key, byte[] fileAad, int rowGroup, int column, bool ctr) =>
++        (_key, _fileAad, _rowGroup, _column, _ctr) = (key, fileAad, rowGroup, column, ctr);
++
++    /// <summary>Reads the encrypted page header at the stream's position, leaving the stream after it.</summary>
++    public PageHeader ReadHeader(Stream s, bool dictionary, int page) {
++        byte[] module = ReadModule(s);
++        byte[] plain = AesModules.DecryptGcm(_key, module, dictionary
++            ? AesModules.Aad(_fileAad, ModuleType.DictionaryPageHeader, _rowGroup, _column)
++            : AesModules.Aad(_fileAad, ModuleType.DataPageHeader, _rowGroup, _column, page));
++        using var ms = new MemoryStream(plain);
++        return PageHeader.Read(new ThriftCompactProtocolReader(ms));
++    }
++
++    public byte[] Page(ReadOnlySpan<byte> module, bool dictionary, int page) =>
++        _ctr
++            ? AesModules.DecryptCtr(_key, module)
++            : AesModules.DecryptGcm(_key, module, dictionary
++                ? AesModules.Aad(_fileAad, ModuleType.DictionaryPage, _rowGroup, _column)
++                : AesModules.Aad(_fileAad, ModuleType.DataPage, _rowGroup, _column, page));
++
++    private static byte[] ReadModule(Stream s) {
++        byte[] prefix = new byte[AesModules.LengthPrefix];
++        s.ReadExactly(prefix);
++        int length = BitConverter.ToInt32(prefix, 0);
++        if(length < AesModules.NonceLength || length > s.Length - s.Position)
++            throw new ParquetException($"encrypted module length {length} is invalid");
++        byte[] module = new byte[AesModules.LengthPrefix + length];
++        prefix.CopyTo(module, 0);
++        s.ReadExactly(module, AesModules.LengthPrefix, length);
++        return module;
++    }
++}
++
++/// <summary>A file being written with encryption: its file AAD, and the keys of its columns.</summary>
++sealed class FileEncryptor {
++    private readonly ParquetEncryptionOptions _options;
++    private readonly byte[] _fileAad;
++    private readonly EncryptionAlgorithm _algorithm;
++
++    public FileEncryptor(ParquetEncryptionOptions options) {
++        AesModules.CheckKey(options.FooterKey, "the footer key");
++        foreach(KeyValuePair<string, ParquetColumnKey> c in options.ColumnKeys ?? new Dictionary<string, ParquetColumnKey>())
++            AesModules.CheckKey(c.Value.Key, $"the key of column {c.Key}");
++        _options = options;
++
++        byte[] unique = RandomNumberGenerator.GetBytes(8);
++        byte[] prefix = options.AadPrefix ?? [];
++        _fileAad = [.. prefix, .. unique];
++        byte[]? stored = options.AadPrefix != null && options.StoreAadPrefix ? options.AadPrefix : null;
++        bool? supply = options.AadPrefix != null && !options.StoreAadPrefix ? true : null;
++        _algorithm = options.UseCtrForPages
++            ? new EncryptionAlgorithm { AESGCMCTRV1 = new AesGcmCtrV1 { AadPrefix = stored, AadFileUnique = unique, SupplyAadPrefix = supply } }
++            : new EncryptionAlgorithm { AESGCMV1 = new AesGcmV1 { AadPrefix = stored, AadFileUnique = unique, SupplyAadPrefix = supply } };
++    }
++
++    public bool EncryptedFooter => !_options.PlaintextFooter;
++
++    private (byte[] key, ParquetColumnKey? own)? KeyOf(IEnumerable<string> path) {
++        if(_options.ColumnKeys == null)
++            return (_options.FooterKey, null);
++        return _options.ColumnKeys.TryGetValue(string.Join(".", path), out ParquetColumnKey? ck) ? (ck.Key, ck) : null;
++    }
++
++    /// <summary>The encryptor for a column chunk, or null when the column is written in plaintext.</summary>
++    public ColumnEncryptor? ForColumn(IEnumerable<string> path, int rowGroup, int column) =>
++        KeyOf(path) is (byte[] key, _) ? new ColumnEncryptor(key, _fileAad, rowGroup, column, _options.UseCtrForPages) : null;
++
++    /// <summary>
++    /// Sets the row group ordinals and each column's crypto metadata: columns with their own key (and every encrypted
++    /// column when the footer is plaintext) get their metadata encrypted, plaintext footers keep a copy without statistics.
++    /// </summary>
++    public void Seal(FileMetaData meta) {
++        for(int r = 0; r < meta.RowGroups.Count; r++) {
++            RowGroup rg = meta.RowGroups[r];
++            rg.Ordinal = (short)r;
++            for(int c = 0; c < rg.Columns.Count; c++) {
++                ColumnChunk cc = rg.Columns[c];
++                ColumnMetaData md = cc.MetaData!;
++                if(KeyOf(md.PathInSchema) is not (byte[] key, var own))
++                    continue;
++                cc.CryptoMetadata = own == null
++                    ? new ColumnCryptoMetaData { ENCRYPTIONWITHFOOTERKEY = new EncryptionWithFooterKey() }
++                    : new ColumnCryptoMetaData {
++                        ENCRYPTIONWITHCOLUMNKEY = new EncryptionWithColumnKey { PathInSchema = md.PathInSchema.ToList(), KeyMetadata = own.KeyMetadata }
++                    };
++                if(own == null && EncryptedFooter)
++                    continue;   // protected by the footer's encryption
++                using(var ms = new MemoryStream()) {
++                    md.Write(new ThriftCompactProtocolWriter(ms));
++                    cc.EncryptedColumnMetadata = AesModules.EncryptGcm(key, ms.ToArray(),
++                        AesModules.Aad(_fileAad, ModuleType.ColumnMetaData, r, c));
++                }
++                cc.MetaData = EncryptedFooter ? null : Stripped(md);
++            }
++        }
++        if(!EncryptedFooter) {
++            meta.EncryptionAlgorithm = _algorithm;
++            meta.FooterSigningKeyMetadata = _options.FooterKeyMetadata;
++        }
++    }
++
++    /// <summary>What readers without the column's key see in a plaintext footer: no statistics.</summary>
++    private static ColumnMetaData Stripped(ColumnMetaData md) => new() {
++        Type = md.Type, Encodings = md.Encodings, PathInSchema = md.PathInSchema, Codec = md.Codec,
++        NumValues = md.NumValues, TotalUncompressedSize = md.TotalUncompressedSize,
++        TotalCompressedSize = md.TotalCompressedSize, DataPageOffset = md.DataPageOffset,
++        DictionaryPageOffset = md.DictionaryPageOffset, IndexPageOffset = md.IndexPageOffset,
++    };
++
++    /// <summary>The footer as stored between the data and the footer length (after <see cref="Seal"/>).</summary>
++    public byte[] Footer(FileMetaData meta) {
++        byte[] plain;
++        using(var ms = new MemoryStream()) {
++            meta.Write(new ThriftCompactProtocolWriter(ms));
++            plain = ms.ToArray();
++        }
++        byte[] aad = AesModules.Aad(_fileAad, ModuleType.Footer);
++        using var result = new MemoryStream();
++        if(EncryptedFooter) {
++            new FileCryptoMetaData { EncryptionAlgorithm = _algorithm, KeyMetadata = _options.FooterKeyMetadata }
++                .Write(new ThriftCompactProtocolWriter(result));
++            result.Write(AesModules.EncryptGcm(_options.FooterKey, plain, aad));
++        } else {
++            // signature: the nonce and the GCM tag of the footer
++            byte[] nonce = RandomNumberGenerator.GetBytes(AesModules.NonceLength);
++            result.Write(plain);
++            result.Write(nonce);
++            result.Write(AesModules.GcmTag(_options.FooterKey, nonce, plain, aad));
++        }
++        return result.ToArray();
++    }
++}
++
++/// <summary>A file being read with encryption: its algorithm, file AAD and keys.</summary>
++sealed class FileDecryptor {
++    private readonly ParquetDecryptionOptions? _options;
++    private readonly byte[] _fileAad;
++    private readonly bool _ctr;
++    private readonly byte[]? _footerKey;
++
++    private FileDecryptor(EncryptionAlgorithm algorithm, byte[]? footerKeyMetadata, ParquetDecryptionOptions? options) {
++        _options = options;
++        (byte[]? prefix, byte[]? unique, bool? supply) = algorithm switch {
++            { AESGCMV1: AesGcmV1 a } => (a.AadPrefix, a.AadFileUnique, a.SupplyAadPrefix),
++            { AESGCMCTRV1: AesGcmCtrV1 a } => (a.AadPrefix, a.AadFileUnique, a.SupplyAadPrefix),
++            _ => throw new NotSupportedException("unknown Parquet encryption algorithm")
++        };
++        _ctr = algorithm.AESGCMCTRV1 != null;
++        if(supply == true && options?.AadPrefix == null)
++            throw new ParquetException("this file's AAD prefix is not stored in it: set ParquetDecryptionOptions.AadPrefix");
++        if(prefix != null && options?.AadPrefix != null && !prefix.AsSpan().SequenceEqual(options.AadPrefix))
++            throw new ParquetException("the AAD prefix does not match the one stored in the file");
++        _fileAad = [.. options?.AadPrefix ?? prefix ?? [], .. unique ?? []];
++        _footerKey = options?.FooterKey ?? options?.KeyRetriever?.Invoke(footerKeyMetadata);
++    }
++
++    /// <summary>Decrypts an encrypted footer (the bytes between the data and the footer length of a PARE file).</summary>
++    public static (FileMetaData meta, FileDecryptor decryptor) ReadEncryptedFooter(byte[] footer, ParquetDecryptionOptions? options) {
++        using var ms = new MemoryStream(footer);
++        FileCryptoMetaData crypto = FileCryptoMetaData.Read(new ThriftCompactProtocolReader(ms));
++        var d = new FileDecryptor(crypto.EncryptionAlgorithm, crypto.KeyMetadata, options);
++        if(d._footerKey == null)
++            throw new ParquetException("the file's footer is encrypted: set ParquetOptions.Decryption with its footer key or a key retriever");
++        byte[] plain = AesModules.DecryptGcm(d._footerKey, footer.AsSpan((int)ms.Position), AesModules.Aad(d._fileAad, ModuleType.Footer));
++        using var pm = new MemoryStream(plain);
++        FileMetaData meta = FileMetaData.Read(new ThriftCompactProtocolReader(pm));
++        d.DecryptColumnMetadata(meta);
++        return (meta, d);
++    }
++
++    /// <summary>A plaintext footer of an encrypted file: checks its signature when the footer key is known.</summary>
++    public static FileDecryptor ForPlaintextFooter(FileMetaData meta, byte[] footer, int metaLength, ParquetDecryptionOptions? options) {
++        var d = new FileDecryptor(meta.EncryptionAlgorithm!, meta.FooterSigningKeyMetadata, options);
++        if(d._footerKey != null && (options?.VerifyPlaintextFooter ?? true)) {
++            if(footer.Length != metaLength + AesModules.NonceLength + AesModules.TagLength)
++                throw new ParquetException("the plaintext footer has no signature");
++            ReadOnlySpan<byte> nonce = footer.AsSpan(metaLength, AesModules.NonceLength);
++            byte[] tag = AesModules.GcmTag(d._footerKey, nonce, footer.AsSpan(0, metaLength), AesModules.Aad(d._fileAad, ModuleType.Footer));
++            if(!CryptographicOperations.FixedTimeEquals(tag, footer.AsSpan(metaLength + AesModules.NonceLength, AesModules.TagLength)))
++                throw new ParquetException("the plaintext footer's signature does not match: wrong footer key, or a tampered file");
++        }
++        d.DecryptColumnMetadata(meta);
++        return d;
++    }
++
++    private byte[]? KeyOf(ColumnCryptoMetaData crypto) {
++        if(crypto.ENCRYPTIONWITHFOOTERKEY != null)
++            return _footerKey;
++        EncryptionWithColumnKey ck = crypto.ENCRYPTIONWITHCOLUMNKEY!;
++        if(_options?.ColumnKeys != null && _options.ColumnKeys.TryGetValue(string.Join(".", ck.PathInSchema), out byte[]? key))
++            return key;
++        return _options?.KeyRetriever?.Invoke(ck.KeyMetadata);
++    }
++
++    /// <summary>Replaces encrypted column metadata with its plaintext where the key is known.</summary>
++    private void DecryptColumnMetadata(FileMetaData meta) {
++        for(int r = 0; r < meta.RowGroups.Count; r++) {
++            RowGroup rg = meta.RowGroups[r];
++            int ordinal = rg.Ordinal ?? r;
++            for(int c = 0; c < rg.Columns.Count; c++) {
++                ColumnChunk cc = rg.Columns[c];
++                if(cc.CryptoMetadata == null || cc.EncryptedColumnMetadata == null)
++                    continue;
++                byte[]? key = KeyOf(cc.CryptoMetadata);
++                if(key == null)
++                    continue;   // a column this reader has no key for: it cannot be read
++                byte[] plain = AesModules.DecryptGcm(key, cc.EncryptedColumnMetadata, AesModules.Aad(_fileAad, ModuleType.ColumnMetaData, ordinal, c));
++                using var ms = new MemoryStream(plain);
++                cc.MetaData = ColumnMetaData.Read(new ThriftCompactProtocolReader(ms));
++            }
++        }
++    }
++
++    /// <summary>The decryptor for a column chunk, or null when the column is in plaintext.</summary>
++    public ColumnDecryptor? ForColumn(ColumnChunk cc, int rowGroup, int column) {
++        if(cc.CryptoMetadata == null)
++            return null;
++        byte[] key = KeyOf(cc.CryptoMetadata) ?? throw new ParquetException(
++            $"column '{string.Join(".", cc.CryptoMetadata.ENCRYPTIONWITHCOLUMNKEY?.PathInSchema ?? cc.MetaData?.PathInSchema ?? [])}' is encrypted and no key was given for it");
++        return new ColumnDecryptor(key, _fileAad, rowGroup, column, _ctr);
++    }
++}
+diff --git a/src/Parquet/Encryption/ParquetEncryptionOptions.cs b/src/Parquet/Encryption/ParquetEncryptionOptions.cs
+new file mode 100644
+index 0000000..e6aa29a
+--- /dev/null
++++ b/src/Parquet/Encryption/ParquetEncryptionOptions.cs
+@@ -0,0 +1,61 @@
++using System;
++using System.Collections.Generic;
++
++namespace Parquet.Encryption;
++
++/// <summary>
++/// Writes a file with Parquet modular encryption (parquet-format Encryption.md): AES-GCM, with a footer key and
++/// optionally separate keys for some columns. Keys are 16, 24 or 32 bytes (AES-128, AES-192, AES-256).
++/// </summary>
++public sealed class ParquetEncryptionOptions {
++    /// <summary>The key the footer is encrypted (or, with <see cref="PlaintextFooter"/>, signed) with.</summary>
++    public required byte[] FooterKey { get; set; }
++
++    /// <summary>Stored in the file for readers to find the footer key with (a key ID, for instance).</summary>
++    public byte[]? FooterKeyMetadata { get; set; }
++
++    /// <summary>
++    /// Keys for individual columns, by dotted path (<c>a.b.list.element</c>). When set, only these columns are
++    /// encrypted and the others are written in plaintext; when null, every column is encrypted with the footer key.
++    /// </summary>
++    public IDictionary<string, ParquetColumnKey>? ColumnKeys { get; set; }
++
++    /// <summary>
++    /// A prefix bound into every module's additional authenticated data (a file name, for instance), so that a file
++    /// cannot be passed off as another.
++    /// </summary>
++    public byte[]? AadPrefix { get; set; }
++
++    /// <summary>Store <see cref="AadPrefix"/> in the file (default); when false, readers have to supply it.</summary>
++    public bool StoreAadPrefix { get; set; } = true;
++
++    /// <summary>
++    /// Leave the footer readable (signed with the footer key rather than encrypted), so that readers without keys
++    /// still see the schema and the plaintext columns.
++    /// </summary>
++    public bool PlaintextFooter { get; set; }
++
++    /// <summary>Encrypt page data with AES-CTR (AES_GCM_CTR_V1: faster, page data unauthenticated) instead of AES-GCM.</summary>
++    public bool UseCtrForPages { get; set; }
++}
++
++/// <summary>A column's own key, and what is stored for readers to find it with.</summary>
++public sealed record ParquetColumnKey(byte[] Key, byte[]? KeyMetadata = null);
++
++/// <summary>Keys for reading files with Parquet modular encryption.</summary>
++public sealed class ParquetDecryptionOptions {
++    /// <summary>The footer key; when null, <see cref="KeyRetriever"/> is asked with the footer's key metadata.</summary>
++    public byte[]? FooterKey { get; set; }
++
++    /// <summary>Column keys by dotted path; when a column has none here, <see cref="KeyRetriever"/> is asked.</summary>
++    public IDictionary<string, byte[]>? ColumnKeys { get; set; }
++
++    /// <summary>Finds a key from the key metadata stored in the file (null when the writer stored none). Returns null when it has no key.</summary>
++    public Func<byte[]?, byte[]?>? KeyRetriever { get; set; }
++
++    /// <summary>The AAD prefix, for files written without storing it.</summary>
++    public byte[]? AadPrefix { get; set; }
++
++    /// <summary>Check the signature of a plaintext footer when the footer key is available (default).</summary>
++    public bool VerifyPlaintextFooter { get; set; } = true;
++}
+diff --git a/src/Parquet/File/DataColumnReader.cs b/src/Parquet/File/DataColumnReader.cs
+index 5a20f5e..45c54f2 100644
+--- a/src/Parquet/File/DataColumnReader.cs
++++ b/src/Parquet/File/DataColumnReader.cs
+@@ -27,6 +27,9 @@ class DataColumnReader {
+     private readonly ParquetOptions _options;
+     private readonly DataColumnStatistics? _stats;
+     private readonly CompressionMethod _compressionMethod;
++    private readonly Encryption.ColumnDecryptor? _decryptor;
++    private bool _pageIsDictionary;
++    private int _dataPageOrdinal;
+     private static readonly RecyclableMemoryStreamManager _rmsMgr = new RecyclableMemoryStreamManager();
+ 
+     internal DataColumnReader(
+@@ -35,7 +38,9 @@ class DataColumnReader {
+        ColumnChunk thriftColumnChunk,
+        DataColumnStatistics? stats,
+        ThriftFooter footer,
+-       ParquetOptions? parquetOptions) {
++       ParquetOptions? parquetOptions,
++       Encryption.ColumnDecryptor? decryptor = null) {
++        _decryptor = decryptor;
+         _dataField = dataField ?? throw new ArgumentNullException(nameof(dataField));
+         _inputStream = inputStream ?? throw new ArgumentNullException(nameof(inputStream));
+         _thriftColumnChunk = thriftColumnChunk ?? throw new ArgumentNullException(nameof(thriftColumnChunk));
+@@ -68,11 +73,16 @@ class DataColumnReader {
+ 
+         long fileOffset = GetFileOffset();
+         long pageOffset = fileOffset;
++        // encrypted: a page header's AAD depends on whether it is the dictionary page's, which comes first when there is one
++        bool dictionaryFirst = _thriftColumnChunk.MetaData.DictionaryPageOffset is > 0;
+ 
+         while(rc.ValuesRead < totalValuesInChunk) {
+             // use absolute positioning on every page read, because in some edge cases page reader may not exhaust or over-read page data
+             _inputStream.Seek(pageOffset, SeekOrigin.Begin);
+-            PageHeader ph = PageHeader.Read(new ThriftCompactProtocolReader(_inputStream));
++            _pageIsDictionary = dictionaryFirst && pageOffset == fileOffset;
++            PageHeader ph = _decryptor == null
++                ? PageHeader.Read(new ThriftCompactProtocolReader(_inputStream))
++                : _decryptor.ReadHeader(_inputStream, _pageIsDictionary, _dataPageOrdinal);
+             pageOffset = _inputStream.Position + ph.CompressedPageSize;
+ 
+             switch(ph.Type) {
+@@ -88,14 +98,26 @@ class DataColumnReader {
+                 default:
+                     throw new NotSupportedException($"can't read page type {ph.Type}");
+             }
++            if(ph.Type != PageType.DICTIONARY_PAGE)
++                _dataPageOrdinal++;
+         }
+     }
+ 
+     private async ValueTask<IMemoryOwner<byte>> ReadPageDataAsync(PageHeader ph) {
++        if(_decryptor != null) {
++            using var ms = new MemoryStream(await ReadEncryptedPageAsync(ph), false);
++            return await Compressor.Instance.Decompress(_compressionMethod, ms, ph.UncompressedPageSize);
++        }
+         Stream src = _inputStream.Sub(_inputStream.Position, ph.CompressedPageSize);
+         return await Compressor.Instance.Decompress(_compressionMethod, src, ph.UncompressedPageSize);
+     }
+ 
++    /// <summary>The page's (compressed) bytes, decrypted.</summary>
++    private async ValueTask<byte[]> ReadEncryptedPageAsync(PageHeader ph) {
++        byte[] module = await _inputStream.ReadBytesExactlyAsync(ph.CompressedPageSize);
++        return _decryptor!.Page(module, _pageIsDictionary, _dataPageOrdinal);
++    }
++
+     private async ValueTask ReadDictionaryPageAsync<T>(PageHeader ph, ReadingColumn<T> rc, CancellationToken cancellationToken) where T : struct {
+ 
+         if(rc.HasDictionary)
+@@ -167,10 +189,17 @@ class DataColumnReader {
+             throw new ParquetException($"column '{_dataField.Path}' is missing data page header, file is corrupt");
+         }
+ 
+-        using var pageMemory = MemoryOwner<byte>.Allocate(ph.CompressedPageSize);
+-        await using(Stream src = _inputStream.Sub(_inputStream.Position, ph.CompressedPageSize)) {
++        MemoryOwner<byte> pageMemory;
++        if(_decryptor != null) {
++            byte[] page = await ReadEncryptedPageAsync(ph);
++            pageMemory = MemoryOwner<byte>.Allocate(page.Length);
++            page.CopyTo(pageMemory.Span);
++        } else {
++            pageMemory = MemoryOwner<byte>.Allocate(ph.CompressedPageSize);
++            await using Stream src = _inputStream.Sub(_inputStream.Position, ph.CompressedPageSize);
+             await src.CopyToAsync(pageMemory.Memory, cancellationToken);
+         }
++        using MemoryOwner<byte> pageMemoryOwner = pageMemory;
+         // v2 pages: repetition then definition levels (RLE, uncompressed, without a length prefix: the lengths are
+         // in the header), then the values, which alone are compressed
+         int repLength = ph.DataPageHeaderV2.RepetitionLevelsByteLength;
+diff --git a/src/Parquet/File/DataColumnWriter.cs b/src/Parquet/File/DataColumnWriter.cs
+index 64473f6..ee0cef3 100644
+--- a/src/Parquet/File/DataColumnWriter.cs
++++ b/src/Parquet/File/DataColumnWriter.cs
+@@ -20,6 +20,8 @@ class DataColumnWriter {
+     private readonly SchemaElement _schemaElement;
+     private readonly Dictionary<string, string>? _keyValueMetadata;
+     private readonly ParquetOptions _options;
++    private readonly Encryption.ColumnEncryptor? _encryptor;
++    private int _dataPageOrdinal;
+     private static readonly RecyclableMemoryStreamManager _rmsMgr = new RecyclableMemoryStreamManager();
+ 
+     public DataColumnWriter(
+@@ -27,7 +29,9 @@ class DataColumnWriter {
+        ThriftFooter footer,
+        SchemaElement schemaElement,
+        ParquetOptions options,
+-       Dictionary<string, string>? keyValueMetadata) {
++       Dictionary<string, string>? keyValueMetadata,
++       Encryption.ColumnEncryptor? encryptor = null) {
++        _encryptor = encryptor;
+         _stream = stream;
+         _footer = footer;
+         _schemaElement = schemaElement;
+@@ -93,29 +97,42 @@ class DataColumnWriter {
+         CancellationToken cancellationToken) {
+ 
+         int uncompressedLength = (int)uncompressedData.Length;
+-        using IMemoryOwner<byte> pageData = await Compressor.Instance.CompressAsync(
++        using IMemoryOwner<byte> compressed = await Compressor.Instance.CompressAsync(
+             _options.CompressionMethod, _options.CompressionLevel, uncompressedData);
+-        int compressedLength = pageData.Memory.Length;
++
++        // encrypted: the page and its header are each a module, and the page size is the module's
++        bool dictionary = ph.Type == PageType.DICTIONARY_PAGE;
++        int pageOrdinal = dictionary ? -1 : _dataPageOrdinal++;
++        ReadOnlyMemory<byte> pageData = _encryptor == null
++            ? compressed.Memory
++            : _encryptor.Page(compressed.Memory.Span, dictionary, pageOrdinal);
+ 
+         ph.UncompressedPageSize = uncompressedLength;
+-        ph.CompressedPageSize = compressedLength;
++        ph.CompressedPageSize = pageData.Length;
+ 
+         //write the header in
+         using(MemoryStream headerMs = _rmsMgr.GetStream()) {
+             ph.Write(new Meta.Proto.ThriftCompactProtocolWriter(headerMs));
+-            int headerSize = (int)headerMs.Length;
+-            headerMs.Position = 0;
+             _stream.Flush();
+ 
+             // write header
+-            await headerMs.CopyToAsync(_stream);
++            int headerSize;
++            if(_encryptor == null) {
++                headerSize = (int)headerMs.Length;
++                headerMs.Position = 0;
++                await headerMs.CopyToAsync(_stream);
++            } else {
++                byte[] header = _encryptor.Header(headerMs.GetBuffer().AsSpan(0, (int)headerMs.Length), dictionary, pageOrdinal);
++                headerSize = header.Length;
++                await _stream.WriteAsync(header, 0, header.Length, cancellationToken);
++            }
+ 
+             cs.CompressedSize += headerSize;
+             cs.UncompressedSize += headerSize;
+         }
+ 
+         // write data
+-        await pageData.Memory.CopyToAsync(_stream);
++        await _stream.WriteAsync(pageData, cancellationToken);
+ 
+         cs.CompressedSize += ph.CompressedPageSize;
+         cs.UncompressedSize += ph.UncompressedPageSize;
+diff --git a/src/Parquet/File/ThriftFooter.cs b/src/Parquet/File/ThriftFooter.cs
+index a7260ac..8aae106 100644
+--- a/src/Parquet/File/ThriftFooter.cs
++++ b/src/Parquet/File/ThriftFooter.cs
+@@ -103,6 +103,8 @@ class ThriftFooter {
+         return ms.Length;
+     }
+ 
++    internal FileMetaData Meta => _fileMeta;
++
+     /// <summary>Sort order of each leaf column, in schema order, when the writer recorded them.</summary>
+     public List<ColumnOrder>? ColumnOrders => _fileMeta.ColumnOrders;
+ 
+diff --git a/src/Parquet/ParquetActor.cs b/src/Parquet/ParquetActor.cs
+index 5f95610..43c8cc7 100644
+--- a/src/Parquet/ParquetActor.cs
++++ b/src/Parquet/ParquetActor.cs
+@@ -13,6 +13,7 @@ namespace Parquet;
+ /// </summary>
+ public class ParquetActor {
+     internal static readonly byte[] MagicBytes = Encoding.ASCII.GetBytes("PAR1");
++    internal static readonly byte[] EncryptedMagicBytes = Encoding.ASCII.GetBytes("PARE");
+     private readonly Stream _fileStream;
+ 
+     internal ParquetActor(Stream? fileStream) =>
+@@ -32,24 +33,42 @@ public class ParquetActor {
+         _fileStream.Seek(-4, SeekOrigin.End);
+         byte[] tail = await _fileStream.ReadBytesExactlyAsync(4);
+ 
+-        byte[] head = tail;     // the head is not read when not checked
++        byte[] head = tail;     // the tail's magic says whether the footer is encrypted; the head must match it
+         if(checkHead) {
+             _fileStream.Seek(0, SeekOrigin.Begin);
+             head = await _fileStream.ReadBytesExactlyAsync(4);
+         }
+ 
+-        if(!MagicBytes.SequenceEqual(head) || !MagicBytes.SequenceEqual(tail))
++        bool plain = MagicBytes.SequenceEqual(head) && MagicBytes.SequenceEqual(tail);
++        bool encrypted = EncryptedMagicBytes.SequenceEqual(head) && EncryptedMagicBytes.SequenceEqual(tail);
++        if(!plain && !encrypted)
+             throw new IOException($"not a parquet file, head: {head.ToHexString()}, tail: {tail.ToHexString()}");
++        HasEncryptedFooter = encrypted;
+     }
+ 
+     internal int LastFooterLength { get; private set; }
+ 
+-    internal async ValueTask<Parquet.Meta.FileMetaData> ReadMetadataAsync(CancellationToken cancellationToken = default) {
++    /// <summary>The file ends in "PARE": its footer is encrypted.</summary>
++    internal bool HasEncryptedFooter { get; private set; }
++
++    /// <summary>Decrypts the file's columns, when it has encrypted ones (set by <see cref="ReadMetadataAsync"/>).</summary>
++    internal Encryption.FileDecryptor? Decryptor { get; private set; }
++
++    internal async ValueTask<Parquet.Meta.FileMetaData> ReadMetadataAsync(CancellationToken cancellationToken = default,
++        Encryption.ParquetDecryptionOptions? decryption = null) {
+         int footerLength = await GoBeforeFooterAsync();
+         LastFooterLength = footerLength;
+         byte[] footerData = await _fileStream.ReadBytesExactlyAsync(footerLength);
++        if(HasEncryptedFooter) {
++            (Meta.FileMetaData meta, Encryption.FileDecryptor decryptor) = Encryption.FileDecryptor.ReadEncryptedFooter(footerData, decryption);
++            Decryptor = decryptor;
++            return meta;
++        }
+         using var ms = new MemoryStream(footerData);
+-        return Parquet.Meta.FileMetaData.Read(new Meta.Proto.ThriftCompactProtocolReader(ms));
++        Meta.FileMetaData result = Parquet.Meta.FileMetaData.Read(new Meta.Proto.ThriftCompactProtocolReader(ms));
++        if(result.EncryptionAlgorithm != null)
++            Decryptor = Encryption.FileDecryptor.ForPlaintextFooter(result, footerData, (int)ms.Position, decryption);
++        return result;
+     }
+ 
+     internal async ValueTask<int> GoBeforeFooterAsync() {
+diff --git a/src/Parquet/ParquetOptions.cs b/src/Parquet/ParquetOptions.cs
+index c5b95c9..a3d4cce 100644
+--- a/src/Parquet/ParquetOptions.cs
++++ b/src/Parquet/ParquetOptions.cs
+@@ -96,11 +96,21 @@ public class ParquetOptions {
+     /// statistics are never used for pruning (position delete files, for instance) can leave them out.
+     /// </summary>
+     public bool WriteStatistics { get; set; } = true;
++
++    /// <summary>
+     /// Check the magic bytes at the start of a file as well as at its end (default). Readers over ranged storage turn
+     /// this off to save a request for the first four bytes; the footer and its trailing magic are always checked.
+     /// </summary>
+     public bool ValidateHeaderMagic { get; set; } = true;
+ 
++    /// <summary>
++    /// Write files with Parquet modular encryption (AES-GCM) using these keys. Not supported when appending.
++    /// </summary>
++    public Encryption.ParquetEncryptionOptions? Encryption { get; set; }
++
++    /// <summary>Keys for reading files with Parquet modular encryption.</summary>
++    public Encryption.ParquetDecryptionOptions? Decryption { get; set; }
++
+     internal Type DecimalType => UseBigDecimal ? typeof(BigDecimal) : typeof(decimal);
+ 
+     /// <summary>
+diff --git a/src/Parquet/ParquetReader.cs b/src/Parquet/ParquetReader.cs
+index 6327178..d204e87 100644
+--- a/src/Parquet/ParquetReader.cs
++++ b/src/Parquet/ParquetReader.cs
+@@ -40,7 +40,7 @@ public class ParquetReader : ParquetActor, IAsyncDisposable {
+         await ValidateFileAsync(_parquetOptions.ValidateHeaderMagic);
+ 
+         //read metadata instantly, now
+-        _meta = await ReadMetadataAsync(cancellationToken);
++        _meta = await ReadMetadataAsync(cancellationToken, _parquetOptions.Decryption);
+         FooterLength = LastFooterLength;
+         _thriftFooter = new ThriftFooter(_meta);
+ 
+@@ -155,8 +155,9 @@ public class ParquetReader : ParquetActor, IAsyncDisposable {
+         if(_meta?.RowGroups == null)
+             throw new InvalidOperationException("no row groups in metadata");
+ 
+-        foreach(RowGroup rowGroup in _meta.RowGroups) {
+-            _groupReaders.Add(new ParquetRowGroupReader(rowGroup, _thriftFooter!, Stream, _parquetOptions));
++        for(int i = 0; i < _meta.RowGroups.Count; i++) {
++            _groupReaders.Add(new ParquetRowGroupReader(_meta.RowGroups[i], _thriftFooter!, Stream, _parquetOptions,
++                Decryptor, _meta.RowGroups[i].Ordinal ?? i));
+         }
+     }
+ 
+diff --git a/src/Parquet/ParquetRowGroupReader.cs b/src/Parquet/ParquetRowGroupReader.cs
+index 1659d09..11fc36c 100644
+--- a/src/Parquet/ParquetRowGroupReader.cs
++++ b/src/Parquet/ParquetRowGroupReader.cs
+@@ -26,12 +26,19 @@ public class ParquetRowGroupReader : IDisposable {
+     private readonly Stream _stream;
+     private readonly ParquetOptions? _options;
+     private readonly Dictionary<FieldPath, ColumnChunk> _pathToChunk = new();
++    private readonly Encryption.FileDecryptor? _decryptor;
++    private readonly HashSet<FieldPath> _hidden = new();
++    private readonly int _ordinal;
+ 
+     internal ParquetRowGroupReader(
+        RowGroup rowGroup,
+        ThriftFooter footer,
+        Stream stream,
+-       ParquetOptions? parquetOptions) {
++       ParquetOptions? parquetOptions,
++       Encryption.FileDecryptor? decryptor = null,
++       int ordinal = 0) {
++        _decryptor = decryptor;
++        _ordinal = ordinal;
+         _rowGroup = rowGroup ?? throw new ArgumentNullException(nameof(rowGroup));
+         _footer = footer ?? throw new ArgumentNullException(nameof(footer));
+         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+@@ -39,6 +46,12 @@ public class ParquetRowGroupReader : IDisposable {
+ 
+         //cache chunks
+         foreach(ColumnChunk hunk in _rowGroup.Columns) {
++            // an encrypted column this reader has no key for has no metadata: it is not readable
++            if(hunk.MetaData == null) {
++                if(hunk.CryptoMetadata?.ENCRYPTIONWITHCOLUMNKEY?.PathInSchema is { } hidden)
++                    _hidden.Add(new FieldPath(hidden));
++                continue;
++            }
+             FieldPath path = hunk.GetPath();
+             _pathToChunk[path] = hunk;
+         }
+@@ -67,7 +80,9 @@ public class ParquetRowGroupReader : IDisposable {
+ 
+     private ColumnMetaData GetColumnMetaData(DataField field) {
+         ColumnChunk columnChunk = GetMetadata(field)
+-            ?? throw new ParquetException($"'{field.Path}' does not exist in this file");
++            ?? throw new ParquetException(_hidden.Contains(field.Path)
++                ? $"'{field.Path}' is encrypted and no key was given for it"
++                : $"'{field.Path}' does not exist in this file");
+         if(columnChunk.MetaData == null)
+             throw new ParquetException($"Column chunk metadata is missing for '{field.Path}', meaning the file is most probably corrupt");
+         return columnChunk.MetaData;
+@@ -112,7 +127,8 @@ public class ParquetRowGroupReader : IDisposable {
+             throw new ArgumentException($"Repetition levels buffer is too small for field '{field.Path}' (length {repetitionLevels.Value.Length} < numValues {RowCount})");
+ 
+         var columnReader = new DataColumnReader(field, _stream,
+-            columnChunk, ReadColumnStatistics(columnChunk), _footer, _options);
++            columnChunk, ReadColumnStatistics(columnChunk), _footer, _options,
++            _decryptor?.ForColumn(columnChunk, _ordinal, _rowGroup.Columns.IndexOf(columnChunk)));
+ 
+         using var rc = new ReadingColumn<T>(field, values, definitionLevels, repetitionLevels);
+         await columnReader.ReadAsync(rc, cancellationToken);
+diff --git a/src/Parquet/ParquetRowGroupWriter.cs b/src/Parquet/ParquetRowGroupWriter.cs
+index f9f8f3f..3be33e8 100644
+--- a/src/Parquet/ParquetRowGroupWriter.cs
++++ b/src/Parquet/ParquetRowGroupWriter.cs
+@@ -25,11 +25,17 @@ public class ParquetRowGroupWriter : IDisposable {
+     private readonly RowGroup _thriftRowGroup;
+     private readonly SchemaElement[] _thschema;
+     private int _colIdx;
++    private readonly Encryption.FileEncryptor? _encryptor;
++    private readonly int _ordinal;
+ 
+     internal ParquetRowGroupWriter(
+        Stream stream,
+        ThriftFooter footer,
+-       ParquetOptions options) {
++       ParquetOptions options,
++       Encryption.FileEncryptor? encryptor = null,
++       int ordinal = 0) {
++        _encryptor = encryptor;
++        _ordinal = ordinal;
+         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+         _footer = footer ?? throw new ArgumentNullException(nameof(footer));
+         _options = options;
+@@ -215,7 +221,8 @@ public class ParquetRowGroupWriter : IDisposable {
+ 
+         FieldPath path = _footer.GetPath(tse);
+ 
+-        var writer = new DataColumnWriter(_stream, _footer, tse, _options, customMetadata);
++        var writer = new DataColumnWriter(_stream, _footer, tse, _options, customMetadata,
++            _encryptor?.ForColumn(path.ToList(), _ordinal, _colIdx - 1));
+ 
+         if(RowCount == null) {
+             RowCount = wc.CalculateRowCount();
+diff --git a/src/Parquet/ParquetWriter.cs b/src/Parquet/ParquetWriter.cs
+index 9360346..89acea6 100644
+--- a/src/Parquet/ParquetWriter.cs
++++ b/src/Parquet/ParquetWriter.cs
+@@ -22,6 +22,7 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
+     private readonly ParquetOptions _options;
+     private bool _dataWritten;
+     private readonly List<ParquetRowGroupWriter> _openedWriters = new List<ParquetRowGroupWriter>();
++    private readonly Encryption.FileEncryptor? _encryptor;
+ 
+     private ParquetWriter(ParquetSchema schema, Stream output, ParquetOptions? options = null, bool append = false)
+        : base(output.CanSeek == true ? output : new MeteredWriteStream(output)) {
+@@ -32,6 +33,11 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
+             throw new ArgumentException("stream is not writeable", nameof(output));
+         _schema = schema ?? throw new ArgumentNullException(nameof(schema));
+         _options = options ?? new ParquetOptions();
++        if(_options.Encryption != null) {
++            if(append)
++                throw new NotSupportedException("appending to encrypted files is not supported");
++            _encryptor = new Encryption.FileEncryptor(_options.Encryption);
++        }
+     }
+ 
+     /// <summary>
+@@ -58,7 +64,7 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
+     public ParquetRowGroupWriter CreateRowGroup() {
+         _dataWritten = true;
+ 
+-        var writer = new ParquetRowGroupWriter(Stream, _footer!, _options);
++        var writer = new ParquetRowGroupWriter(Stream, _footer!, _options, _encryptor, _openedWriters.Count);
+ 
+         _openedWriters.Add(writer);
+ 
+@@ -82,8 +88,12 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
+                 throw new IOException($"you can only append to existing streams, but current stream is empty.");
+ 
+             await ValidateFileAsync();
++            if(HasEncryptedFooter)
++                throw new NotSupportedException("appending to encrypted files is not supported");
+ 
+             FileMetaData fileMeta = await ReadMetadataAsync(cancellationToken);
++            if(Decryptor != null)
++                throw new NotSupportedException("appending to encrypted files is not supported");
+             _footer = new ThriftFooter(fileMeta);
+ 
+             ValidateSchemasCompatible(_footer, _schema);
+@@ -114,7 +124,10 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
+         }
+     }
+ 
+-    private Task WriteMagicAsync() => Stream.WriteAsync(MagicBytes, 0, MagicBytes.Length);
++    // an encrypted footer is marked by "PARE" at both ends
++    private Task WriteMagicAsync() => _encryptor?.EncryptedFooter == true
++        ? Stream.WriteAsync(EncryptedMagicBytes, 0, EncryptedMagicBytes.Length)
++        : Stream.WriteAsync(MagicBytes, 0, MagicBytes.Length);
+ 
+     private void DisposeCore() {
+         if(_dataWritten) {
+@@ -132,7 +145,15 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
+         if(_footer == null)
+             return;
+ 
+-        long size = await _footer.WriteAsync(Stream).ConfigureAwait(false);
++        long size;
++        if(_encryptor != null) {
++            _encryptor.Seal(_footer.Meta);
++            byte[] footer = _encryptor.Footer(_footer.Meta);
++            await Stream.WriteAsync(footer, 0, footer.Length);
++            size = footer.Length;
++        } else {
++            size = await _footer.WriteAsync(Stream).ConfigureAwait(false);
++        }
+         await Stream.WriteInt32Async((int)size);
+         await WriteMagicAsync();
+         await Stream.FlushAsync();

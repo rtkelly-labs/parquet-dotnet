@@ -12,7 +12,7 @@ an earlier fork commit. The **Commits** line of each unit says which parts of wh
 
 ## How to review a unit
 
-Units 1 to 10c also exist as **verified patches** against upstream `master` (`658e1ca`), in [`upstream/`](upstream/):
+Every unit also exists as a **verified patch**, on its own and as an ordered series, in [`upstream/`](upstream/):
 see [Verified patches](#verified-patches) below. Start from those rather than from the fork's commits.
 
 1. Read the problem statement and reproduce it on upstream `master` (`git checkout 658e1ca`): the unit's test, or the
@@ -309,34 +309,84 @@ to get accepted and they build trust for the larger features.
 
 ## Verified patches
 
-Each file in [`upstream/`](upstream/) is a plain `git diff` against upstream `master` (`658e1ca`): `git apply` it on a
-clean checkout. For each one, the unit's tests were run **without** the source change (they must fail) and the whole
-suite **with** it (it must pass), on Linux, .NET 10.
+Every unit exists as a patch in [`upstream/`](upstream/), in two forms:
 
-| Patch | Unit | Tests failing on upstream | Suite with the patch |
+- **`upstream/NN-*.patch`, one per unit**, for proposing a unit on its own. Most apply to upstream `master`
+  (`658e1ca`); those that need another unit first say so under **Applies to**. For each, the unit's tests were run
+  **without** the library change (bug units: they fail; feature units: they do not compile, the API being new) and
+  the whole suite **with** it (it must pass), on Linux, .NET 10. All are `git diff --binary`: `git apply` them.
+- **`upstream/series/NN-*.patch`, the same units in order**, each applying on top of the previous ones with no
+  conflicts, as if upstream merged them in this order. The overlaps between units are resolved there (listed below).
+  Applied in order to a clean `master`, the series gives a library identical to the fork's apart from comment
+  wording and one equivalent rewrite (the fixed-length branch of `TryDecode`), and its suite passes: **792 passed,
+  3 skipped on net8.0 and on net10.0** (pyarrow and pandas installed).
+
+| Patch | Unit | Applies to | Tests without the change | Suite with it |
+|---|---|---|---|---|
+| `01-timestamp-statistics-unit` | 1 | master | `TimestampStatisticsTest` fails | pass |
+| `03-required-map-repetition` | 3 | master | `RequiredMapTest` fails | pass |
+| `04-nullable-list-elements` | 4 | master | `NullableListElementTest` fails | pass |
+| `05-data-page-v2-repetition` | 5 | master | `DataPageV2Test` fails (binary fixtures included) | pass |
+| `06-dictionary-page-offset` | 6 | master | `PageOffsetTest` (new) fails | pass |
+| `07-uuid-statistics` | 7 | master | 3 of 3 in `UuidStatisticsTest` fail | 699 passed |
+| `08-statistics-sort-order-and-column-orders` | 8 + 2 | master | 8 of 8 in `StatisticsSortOrderTest` fail | 704 passed |
+| `08b-byte-stream-split-statistics` | 8b | master | 2 of 2 in `ByteStreamSplitStatisticsTest` fail | 698 passed |
+| `09-statistics-decoded-as-column-type` | 9 | master | 7 of 7 in `StatisticsDecodingTest` fail | 703 passed |
+| `10-zstd-single-copy` | 10 | master | none: perf (`ConcurrentZstdTest` guards the thread-static cache; 5 runs of 5) | 697 passed |
+| `10b-one-array-per-page` | 10b | master | none: perf (`PageValuesTest` guards against values aliasing reused buffers) | 697 passed |
+| `10c-tests-on-net8` | 10c | master | does not compile on net8.0 | pass on both |
+| `11-field-ids` | 11 | master | `FieldIdTest` does not compile | 699 passed |
+| `12-fixed-length-byte-arrays` | 12 | master | `FixedLengthByteArrayTest` does not compile | 699 passed |
+| `13-write-statistics-option` | 13 | master | `WriteStatisticsOptionTest` does not compile | 698 passed |
+| `14-physical-values` | 14 | 1 + 8 | `PhysicalValuesTest` does not compile | 716 passed |
+| `15-legacy-list-shapes` | 15 | 4 | 4 of 6 in `LegacyListTest` fail (the other 2 are shapes that already worked) | 705 passed |
+| `16-typed-statistics-api` | 16 | 7 + 8 + 9 | `TypedStatisticsTest` does not compile | 725 passed |
+| `17-reader-columns-footer-length` | 17 | master | `ColumnDescriptorTest` does not compile | 697 passed |
+| `17b-column-sort-order` | 17b | 16 + 17 (made on all units but 21) | `ColumnDescriptor.SortOrder` does not compile | 788 passed, net8.0 and net10.0 |
+| `18-raw-data-field` | 18 | 1, 3, 7, 8, 9, 12, 14, 16 | `RawDataFieldTest` does not compile | 750 passed |
+| `19-validate-header-magic` | 19 | master | `Header_magic_check_can_be_skipped` does not compile | 697 passed |
+| `20-modular-encryption` | 20 | 6 | `EncryptionTest` does not compile | 712 passed, net8.0 and net10.0 |
+| `21-parquet-cpp-interop-tests` | 21 | everything else | tests only | 792 passed, net8.0 and net10.0 |
+
+Differences from the fork, so each unit stands alone:
+
+- Tests use ordinary `DataField`s where the fork's used `RawDataField` (unit 18) or ParquetSharp (unit 21), and
+  files written in the test rather than another unit's fixtures (unit 17).
+- Unit 8 adds `ColumnStatisticsRules` with an **internal** `ColumnSortOrder` and `NanCount`; unit 16 makes them public.
+- The unsigned INT32/INT64 comparison (`ComputeUnsigned`) is in unit 14, not 8: only physical values (14) or
+  `RawDataField` (18) can write unsigned values as `int`/`long`. Unit 14 adds a test for it (it failed without).
+- The UUID statistics decode is in unit 7 (it only round-trips with 7's byte order), not 9.
+- Decoding `fixed[n]` bounds as bytes is in unit 12 (where such columns become writable), not 16. Without it, unit 12
+  with unit 8 writes the bounds but `GetStatistics` returns none.
+- `ColumnDescriptor.SortOrder` is its own unit 17b: it needs 16's public enum, and 17 does not otherwise.
+- Unit 16's test is `TypedStatisticsTest` (the fork named it `StatisticsSortOrderTest`, which unit 8's test is now).
+
+Overlaps resolved in the series (what a rebase will meet if the units are merged in another order):
+
+- **3 and 11** edit the same line of the map element: keep both (`RepetitionType` from `IsNullable`, and `FieldId`).
+- **7, 8 and 12** in `ParquetPlainEncoder`: the byte-array write branch takes 12's `EncodeFixed` and 8's bounds;
+  `TryDecode` keeps 7's UUID branch before 12's `fixed[n]` one. Unit 12's test file-size bound grows from 200 to
+  260 bytes once unit 8 writes bounds (the fork's test also checks them then).
+- **13 and 19** add a property at the same place in `ParquetOptions`: keep both.
+- **20 with 10, 17 and 19**: the reader, actor, footer and options take both sides (encryption around the footer
+  read, the footer length, the head check).
+- **15 and 16** both add `data/legacy/three_level.parquet` (identical).
+
+## Performance of the units, measured on their own
+
+On upstream `master` against `master` plus the unit, Linux, .NET 10, Release, best of 7 runs after 2 warm-ups,
+1M values, no compression for writes:
+
+| Unit | What | Upstream | With the unit |
 |---|---|---|---|
-| `01-timestamp-statistics-unit.patch` | 1 | `TimestampStatisticsTest` | pass |
-| `03-required-map-repetition.patch` | 3 | `RequiredMapTest` | pass |
-| `04-nullable-list-elements.patch` | 4 | `NullableListElementTest` | pass |
-| `05-data-page-v2-repetition.patch` | 5 | `DataPageV2Test` (binary fixtures included: apply with `git apply --binary`) | pass |
-| `06-dictionary-page-offset.patch` | 6 | `PageOffsetTest` (new) | pass |
-| `07-uuid-statistics.patch` | 7 | 3 of 3 in `UuidStatisticsTest` | 699 passed |
-| `08-statistics-sort-order-and-column-orders.patch` | 8 + 2 | 8 of 8 in `StatisticsSortOrderTest` | 704 passed |
-| `08b-byte-stream-split-statistics.patch` | 8b | 2 of 2 in `ByteStreamSplitStatisticsTest` | 698 passed |
-| `09-statistics-decoded-as-column-type.patch` | 9 | 7 of 7 in `StatisticsDecodingTest` | 703 passed |
-| `10-zstd-single-copy.patch` | 10 | none: perf (`ConcurrentZstdTest` guards the thread-static cache; passed 5 runs of 5) | 697 passed |
-| `10b-one-array-per-page.patch` | 10b | none: perf (`PageValuesTest` guards against values aliasing reused page buffers) | 697 passed |
-| `10c-tests-on-net8.patch` | 10c | does not compile on net8.0 | pass on net8.0 and net10.0 |
+| 8 | write, byte-array column (now gets bounds) | 58 ms | 68 ms |
+| 8 | write, string / double (NaN counted) / long column | 84 / 5 / 4 ms | 84 / 5 / 4 ms |
+| 8b | write, double column, BYTE_STREAM_SPLIT (now gets bounds) | 12 ms | 14–16 ms |
+| 10 | read, string + binary + int64, Zstd (4 row groups) | 252 ms, 208 MB allocated | 250 ms, 137 MB |
+| 10b | read, the same file, Zstd / Snappy | 252 / 241 ms | 119 / 114 ms |
+| 20 | (fork, 2M rows) write plain / GCM, read plain / GCM | | 477 / 482 ms, 781 / 921 ms |
 
-Differences from the fork, so each patch stands alone:
+Units 8 and 8b cost only where they add statistics that were missing; the comparison changes (code points, NaN)
+are within noise. The feature units (11 to 19) add nothing to paths that do not use them.
 
-- Tests use ordinary `DataField`s, not `RawDataField` (unit 18) or ParquetSharp (unit 21).
-- Unit 8 adds `ColumnStatisticsRules` with an **internal** `ColumnSortOrder`; unit 16 makes the enum public.
-- Unit 8 leaves out the unsigned INT32/INT64 comparison (`ComputeUnsigned`): upstream cannot write unsigned values
-  as `int`/`long` (that needs unit 14 or 18), so it belongs with those. Its `NanCount` is internal (public in unit 16).
-- The patches overlap in `ParquetPlainEncoder.cs` and `StatsCompute.cs`. Each applies to `master`; after one is merged
-  the next may need a rebase (in the suggested order, expect small conflicts in 7 → 8 → 9).
-
-Not verified: Windows and macOS for the patches themselves (the fork's suite runs on both in Iceberg.NET's CI), and
-units 11 to 21 as standalone patches (feature units: review them from the fork's commits).
-
+Not verified: Windows and macOS for the patches themselves (the fork as a whole runs on both in Iceberg.NET's CI).

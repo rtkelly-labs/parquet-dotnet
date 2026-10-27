@@ -1,0 +1,94 @@
+diff --git a/src/Parquet.Test/ConcurrentZstdTest.cs b/src/Parquet.Test/ConcurrentZstdTest.cs
+new file mode 100644
+index 0000000..5749a95
+--- /dev/null
++++ b/src/Parquet.Test/ConcurrentZstdTest.cs
+@@ -0,0 +1,47 @@
++using System;
++using System.IO;
++using System.Linq;
++using System.Threading;
++using System.Threading.Tasks;
++using Parquet.Schema;
++using Xunit;
++
++namespace Parquet.Test;
++
++/// <summary>Many Zstd files read at once, over streams whose reads complete asynchronously (continuations change threads).</summary>
++public class ConcurrentZstdTest {
++
++    sealed class YieldingStream(byte[] bytes) : MemoryStream(bytes, false) {
++        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) {
++            await Task.Yield();
++            return await base.ReadAsync(buffer, cancellationToken);
++        }
++
++        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
++            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
++    }
++
++    [Fact]
++    public async Task Parallel_reads_decompress_correctly() {
++        var field = new DataField<long>("v");
++        long[] values = Enumerable.Range(0, 5_000).Select(i => (long)i * 7919 % 100_003).ToArray();
++        var ms = new MemoryStream();
++        await using(ParquetWriter w = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms, new ParquetOptions { CompressionMethod = CompressionMethod.Zstd })) {
++            for(int g = 0; g < 40; g++) {
++                using ParquetRowGroupWriter rg = w.CreateRowGroup();
++                await rg.WriteAsync<long>(field, values);
++            }
++        }
++        byte[] file = ms.ToArray();
++
++        await Task.WhenAll(Enumerable.Range(0, 64).Select(_ => Task.Run(async () => {
++            await using ParquetReader reader = await ParquetReader.CreateAsync(new YieldingStream(file));
++            DataField f = reader.Schema.GetDataFields()[0];
++            foreach(ParquetRowGroupReader rg in reader.RowGroups) {
++                long[] read = new long[values.Length];
++                await rg.ReadRawAsync<long>(f, read, null, null);
++                Assert.Equal(values, read);
++            }
++        })));
++    }
++}
+diff --git a/src/Parquet/File/Compressor.cs b/src/Parquet/File/Compressor.cs
+index 0cb155d..839f127 100644
+--- a/src/Parquet/File/Compressor.cs
++++ b/src/Parquet/File/Compressor.cs
+@@ -199,16 +199,27 @@ class DefaultCompressor : ICompressor {
+         return owner;
+     }
+ 
++    [ThreadStatic]
++    private static ZstdSharp.Decompressor? _zstdDecompressor;
++
+     private async ValueTask<IMemoryOwner<byte>> ZstdDecompress(Stream source, int destinationLength) {
+-        using var decompressor = new ZstdSharp.Decompressor();
+-        byte[] compressed = source.ToByteArray()!;
+-        // Do not pass destinationLength as maxDecompressedSize — some Parquet files report an incorrect
+-        // UncompressedPageSize in their metadata. Instead, let ZstdSharp read the actual content size
+-        // that is embedded in the Zstd frame header, which is always accurate.
+-        Span<byte> decompressed = decompressor.Unwrap(compressed);
+-        var owner = MemoryOwner<byte>.Allocate(decompressed.Length);
+-        decompressed.CopyTo(owner.Span);
+-        return owner;
++        using MemoryOwner<byte> compressed = MemoryOwner<byte>.Allocate((int)(source.Length - source.Position));
++        await source.ReadExactlyAsync(compressed.Memory);
++        // taken after the await: the continuation may run on another thread, whose decompressor this one must not share
++        ZstdSharp.Decompressor decompressor = _zstdDecompressor ??= new ZstdSharp.Decompressor();
++        // Do not trust destinationLength — some Parquet files report an incorrect UncompressedPageSize in their
++        // metadata. The content size in the Zstd frame header is accurate: decompress straight into a buffer of
++        // that size, falling back to letting ZstdSharp size the output when the header has none.
++        ulong size = ZstdSharp.Decompressor.GetDecompressedSize(compressed.Span);
++        if(size > 0 && size <= int.MaxValue) {
++            MemoryOwner<byte> owner = MemoryOwner<byte>.Allocate((int)size);
++            int written = decompressor.Unwrap(compressed.Span, owner.Span);
++            return written == owner.Length ? owner : owner.Slice(0, written);
++        }
++        Span<byte> decompressed = decompressor.Unwrap(compressed.Span);
++        var result = MemoryOwner<byte>.Allocate(decompressed.Length);
++        decompressed.CopyTo(result.Span);
++        return result;
+     }
+ 
+     // "LZ4" compression, requires K4os.Compression.LZ4 NuGet package

@@ -1,0 +1,64 @@
+diff --git a/src/Parquet.Test/PageOffsetTest.cs b/src/Parquet.Test/PageOffsetTest.cs
+new file mode 100644
+index 0000000..fb58fd0
+--- /dev/null
++++ b/src/Parquet.Test/PageOffsetTest.cs
+@@ -0,0 +1,37 @@
++using System.IO;
++using System.Linq;
++using System.Threading.Tasks;
++using Parquet.Meta;
++using Parquet.Meta.Proto;
++using Parquet.Schema;
++using Xunit;
++
++namespace Parquet.Test;
++
++/// <summary>A column chunk's dictionary_page_offset and data_page_offset point at its dictionary and first data page.</summary>
++public class PageOffsetTest {
++
++    [Fact]
++    public async Task Offsets_point_at_their_pages() {
++        var s = new DataField<string>("s");
++        var ms = new MemoryStream();
++        var options = new ParquetOptions { ColumnEncodingHints = { ["s"] = EncodingHint.Dictionary } };
++        await using(ParquetWriter w = await ParquetWriter.CreateAsync(new ParquetSchema(s), ms, options)) {
++            using ParquetRowGroupWriter rg = w.CreateRowGroup();
++            await rg.WriteAsync(s, Enumerable.Range(0, 100).Select(i => "v" + (i % 3)).ToArray());
++        }
++        ms.Position = 0;
++        ColumnMetaData meta;
++        await using(ParquetReader reader = await ParquetReader.CreateAsync(ms, leaveStreamOpen: true))
++            meta = reader.Metadata!.RowGroups[0].Columns[0].MetaData!;
++        Assert.NotNull(meta.DictionaryPageOffset);
++        Assert.True(meta.DataPageOffset > meta.DictionaryPageOffset);
++
++        PageHeader At(long offset) {
++            ms.Position = offset;
++            return PageHeader.Read(new ThriftCompactProtocolReader(ms));
++        }
++        Assert.Equal(PageType.DICTIONARY_PAGE, At(meta.DictionaryPageOffset!.Value).Type);
++        Assert.Equal(PageType.DATA_PAGE, At(meta.DataPageOffset).Type);
++    }
++}
+diff --git a/src/Parquet/File/DataColumnWriter.cs b/src/Parquet/File/DataColumnWriter.cs
+index d5b5493..507f31f 100644
+--- a/src/Parquet/File/DataColumnWriter.cs
++++ b/src/Parquet/File/DataColumnWriter.cs
+@@ -139,6 +139,7 @@ class DataColumnWriter {
+ 
+         // dictionary page
+         if(wc.HasDictionary) {
++            chunk.MetaData!.DictionaryPageOffset = _stream.Position;
+             PageHeader ph = _footer.CreateDictionaryPage(wc.Dictionary.Length, out _);
+             r.Pages.Add(ph);
+             using MemoryStream ms = _rmsMgr.GetStream();
+@@ -151,6 +152,8 @@ class DataColumnWriter {
+             bool deltaEncode = _options.GetEncodingHint(wc.Field) == EncodingHint.DeltaBinaryPacked && DeltaBinaryPackedEncoder.CanEncode(wc.Values);
+             bool byteSplitStreamEncode = _options.GetEncodingHint(wc.Field) == EncodingHint.ByteSplitStream && ByteStreamSplitEncoder.IsSupported(typeof(T));
+ 
++            chunk.MetaData!.DataPageOffset = _stream.Position;
++
+             // data page Num_values also does include NULLs
+             PageHeader ph = _footer.CreateDataPage(wc.NumValues, wc.HasDictionary, deltaEncode, byteSplitStreamEncode, out DataPageHeader dph);
+             r.Pages.Add(ph);

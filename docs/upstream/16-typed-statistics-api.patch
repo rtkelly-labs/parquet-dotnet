@@ -1,0 +1,351 @@
+diff --git a/src/Parquet.Test/TypedStatisticsTest.cs b/src/Parquet.Test/TypedStatisticsTest.cs
+new file mode 100644
+index 0000000..c56c7d2
+--- /dev/null
++++ b/src/Parquet.Test/TypedStatisticsTest.cs
+@@ -0,0 +1,159 @@
++using System;
++using System.IO;
++using System.Threading.Tasks;
++using Parquet.Data;
++using Parquet.File;
++using Parquet.Meta;
++using Parquet.Schema;
++using Xunit;
++
++namespace Parquet.Test;
++
++/// <summary>Statistics with their sort order, raw bytes and physical values, and the rules for using min and max.</summary>
++public class TypedStatisticsTest : TestBase {
++
++    static readonly DataField<int> Id = new("id");
++    static readonly DataField<ulong> Unsigned = new("u");
++    static readonly DataField<string> Text = new("s");
++    static readonly DecimalDataField Amount = new("d", 9, 2);
++    static readonly DataField<Guid> Uuid = new("g");
++
++    static async Task<MemoryStream> WriteAsync() {
++        var ms = new MemoryStream();
++        var schema = new ParquetSchema(Id, Unsigned, Text, Amount, Uuid);
++        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(schema, ms)) {
++            using ParquetRowGroupWriter rg = writer.CreateRowGroup();
++            await rg.WriteAsync<int>(Id, new[] { 3, -5, 7 });
++            await rg.WriteAsync<ulong>(Unsigned, new[] { 1UL, ulong.MaxValue, 2UL });
++            await rg.WriteAsync(Text, new[] { "b", "a", "c" });
++            await rg.WriteAsync<decimal>(Amount, new[] { 1.25m, -3.50m, 2.00m });
++            await rg.WriteAsync<Guid>(Uuid, new[] {
++                Guid.Parse("00000000-0000-0000-0000-000000000002"),
++                Guid.Parse("ff000000-0000-0000-0000-000000000000"),
++                Guid.Parse("00000000-0000-0000-0000-000000000001") });
++        }
++        ms.Position = 0;
++        return ms;
++    }
++
++    [Fact]
++    public async Task Min_max_with_sort_order_and_physical_values() {
++        using MemoryStream ms = await WriteAsync();
++        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
++        using ParquetRowGroupReader rg = reader.OpenRowGroupReader(0);
++        DataField[] fields = reader.Schema.GetDataFields();
++
++        DataColumnStatistics id = rg.GetStatistics(fields[0])!;
++        Assert.Equal(ColumnSortOrder.Signed, id.SortOrder);
++        Assert.True(id.HasMinMax);
++        Assert.False(id.IsLegacyMinMax);
++        Assert.Equal((-5, 7), ((int)id.PhysicalMin!, (int)id.PhysicalMax!));
++        Assert.Equal(BitConverter.GetBytes(-5), id.MinBytes);
++
++        DataColumnStatistics u = rg.GetStatistics(fields[1])!;
++        Assert.Equal(ColumnSortOrder.Unsigned, u.SortOrder);
++        Assert.Equal((1UL, ulong.MaxValue), ((ulong)u.MinValue!, (ulong)u.MaxValue!));
++        Assert.Equal(-1L, (long)u.PhysicalMax!);    // the bits, as the physical INT64
++
++        DataColumnStatistics s = rg.GetStatistics(fields[2])!;
++        Assert.Equal(ColumnSortOrder.Unsigned, s.SortOrder);
++        Assert.Equal(("a", "c"), ((string)s.MinValue!, (string)s.MaxValue!));
++        Assert.Equal("a"u8.ToArray(), (byte[])s.PhysicalMin!);
++
++        DataColumnStatistics d = rg.GetStatistics(fields[3])!;
++        Assert.Equal(ColumnSortOrder.Signed, d.SortOrder);
++        Assert.Equal((-3.50m, 2.00m), ((decimal)d.MinValue!, (decimal)d.MaxValue!));
++        Assert.Equal(-350, d.PhysicalMin);
++
++        DataColumnStatistics g = rg.GetStatistics(fields[4])!;
++        Assert.Equal(ColumnSortOrder.Unsigned, g.SortOrder);
++        Assert.Equal(Guid.Parse("00000000-0000-0000-0000-000000000001"), g.MinValue);
++        Assert.Equal(Guid.Parse("ff000000-0000-0000-0000-000000000000"), g.MaxValue);
++    }
++
++    /// <summary>The file again, with its footer changed by <paramref name="change"/>.</summary>
++    static async Task<MemoryStream> RewriteFooterAsync(MemoryStream file, Action<FileMetaData> change) {
++        FileMetaData meta;
++        await using(ParquetReader reader = await ParquetReader.CreateAsync(file, leaveStreamOpen: true))
++            meta = reader.Metadata!;
++        change(meta);
++        byte[] bytes = file.ToArray();
++        int footerLength = BitConverter.ToInt32(bytes, bytes.Length - 8);
++        var result = new MemoryStream();
++        result.Write(bytes, 0, bytes.Length - 8 - footerLength);
++        long written = new ThriftFooter(meta).Write(result);
++        result.Write(BitConverter.GetBytes((int)written));
++        result.Write("PAR1"u8);
++        result.Position = 0;
++        return result;
++    }
++
++    [Fact]
++    public async Task Legacy_min_max_only_for_signed_numeric_columns() {
++        using MemoryStream original = await WriteAsync();
++        using MemoryStream ms = await RewriteFooterAsync(original, meta => {
++            foreach(ColumnChunk cc in meta.RowGroups[0].Columns) {
++                Statistics st = cc.MetaData!.Statistics!;
++                (st.Min, st.Max, st.MinValue, st.MaxValue) = (st.MinValue, st.MaxValue, null, null);
++            }
++        });
++        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
++        using ParquetRowGroupReader rg = reader.OpenRowGroupReader(0);
++        DataField[] fields = reader.Schema.GetDataFields();
++
++        DataColumnStatistics id = rg.GetStatistics(fields[0])!;
++        Assert.True(id.IsLegacyMinMax);
++        Assert.Equal((-5, 7), ((int)id.MinValue!, (int)id.MaxValue!));
++
++        // a decimal stored as INT32 compares as its unscaled int
++        Assert.True(rg.GetStatistics(fields[3])!.IsLegacyMinMax);
++
++        // unsigned and byte-array columns: legacy min/max were compared signed, so not used
++        foreach(DataField f in new[] { fields[1], fields[2], fields[4] }) {
++            DataColumnStatistics st = rg.GetStatistics(f)!;
++            Assert.False(st.HasMinMax, f.Name);
++            Assert.Null(st.MinValue);
++            Assert.Equal(0, st.NullCount);
++        }
++    }
++
++    [Fact]
++    public async Task Undefined_column_order_makes_min_max_unusable() {
++        using MemoryStream original = await WriteAsync();
++        using MemoryStream ms = await RewriteFooterAsync(original, meta =>
++            meta.ColumnOrders = [new ColumnOrder(), new ColumnOrder { TYPEORDER = new TypeDefinedOrder() },
++                new ColumnOrder { TYPEORDER = new TypeDefinedOrder() }, new ColumnOrder { TYPEORDER = new TypeDefinedOrder() },
++                new ColumnOrder { TYPEORDER = new TypeDefinedOrder() }]);
++        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
++        using ParquetRowGroupReader rg = reader.OpenRowGroupReader(0);
++        DataField[] fields = reader.Schema.GetDataFields();
++        DataColumnStatistics id = rg.GetStatistics(fields[0])!;
++        Assert.Equal(ColumnSortOrder.Unknown, id.SortOrder);
++        Assert.False(id.HasMinMax);
++        Assert.True(rg.GetStatistics(fields[1])!.HasMinMax);
++    }
++
++    [Fact]
++    public async Task Statistics_written_by_parquet_cpp() {
++        using Stream s = OpenTestFile("legacy/three_level.parquet");
++        await using ParquetReader reader = await ParquetReader.CreateAsync(s);
++        Assert.NotNull(reader.Metadata!.ColumnOrders);
++        using ParquetRowGroupReader rg = reader.OpenRowGroupReader(0);
++        DataColumnStatistics st = rg.GetStatistics(reader.Schema.GetDataFields()[0])!;
++        Assert.Equal(ColumnSortOrder.Signed, st.SortOrder);
++        Assert.False(st.IsLegacyMinMax);
++        Assert.Equal((1, 3), ((int)st.MinValue!, (int)st.MaxValue!));
++        Assert.Equal(2, st.NullCount);    // the empty list and the null list
++    }
++
++    [Theory]
++    [InlineData(Meta.Type.INT96, null, ColumnSortOrder.Unknown)]
++    [InlineData(Meta.Type.FIXED_LEN_BYTE_ARRAY, ConvertedType.INTERVAL, ColumnSortOrder.Unknown)]
++    [InlineData(Meta.Type.FIXED_LEN_BYTE_ARRAY, ConvertedType.DECIMAL, ColumnSortOrder.Signed)]
++    [InlineData(Meta.Type.INT32, ConvertedType.UINT_16, ColumnSortOrder.Unsigned)]
++    [InlineData(Meta.Type.INT32, ConvertedType.DATE, ColumnSortOrder.Signed)]
++    [InlineData(Meta.Type.BOOLEAN, null, ColumnSortOrder.Signed)]
++    [InlineData(Meta.Type.BYTE_ARRAY, ConvertedType.UTF8, ColumnSortOrder.Unsigned)]
++    public void Sort_order_by_type(Meta.Type type, ConvertedType? converted, ColumnSortOrder expected) =>
++        Assert.Equal(expected, ColumnStatisticsRules.SortOrder(new SchemaElement { Type = type, ConvertedType = converted }));
++}
+diff --git a/src/Parquet.Test/data/legacy/three_level.parquet b/src/Parquet.Test/data/legacy/three_level.parquet
+new file mode 100644
+index 0000000000000000000000000000000000000000..d681d1841ca5dc858cc2902a5b86bf6c4afe81da
+GIT binary patch
+literal 341
+zcmYLF%Syvg5S>geF?5xPbGZW-3`IkQwpbzHA{#|qWl{WtP%c{NBPLO^^xOOtzr;zR
+zxHt^MIcMg~tnZ#yq{xsdC?Gfm@Bjb>zJP$HG@a9gB4LAH0(;6o_tC!qj**S(JyHe>
+zvR0gi$d8B+09&2YgYJhZE;2Advw3m*k`OX9sx6-zLJEpp6qzz=w{2SC2rto`xSiX(
+zLkl`&%Qgi|$Qc9?-wwt>{3jyN6W!@9&C}41S;k;m&4y%S7stSJxmY&z=S5QTtN*y5
+zzdSnApB~+VObgRccQ8w;vVMJY?P60^i?XhdAIZC`o9*$C++@q^<%+G9{NIALJoE=G
+CQ!iWq
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/Parquet/Data/ColumnStatisticsRules.cs b/src/Parquet/Data/ColumnStatisticsRules.cs
+index 93ad33c..611d884 100644
+--- a/src/Parquet/Data/ColumnStatisticsRules.cs
++++ b/src/Parquet/Data/ColumnStatisticsRules.cs
+@@ -23,17 +23,3 @@ static class ColumnStatisticsRules {
+         };
+     }
+ }
+-
+-/// <summary>
+-/// How a column's values are ordered for statistics (parquet-format LogicalTypes.md, "Sort Order").
+-/// </summary>
+-enum ColumnSortOrder {
+-    /// <summary>Signed comparison: numbers, dates, times, timestamps, decimals, booleans.</summary>
+-    Signed,
+-
+-    /// <summary>Unsigned (byte-wise) comparison: strings and byte arrays, unsigned integers, UUIDs.</summary>
+-    Unsigned,
+-
+-    /// <summary>No defined order (INT96, INTERVAL, or a column order the reader does not know): min and max are not usable.</summary>
+-    Unknown,
+-}
+diff --git a/src/Parquet/Data/DataColumnStatistics.cs b/src/Parquet/Data/DataColumnStatistics.cs
+index 9961520..66e23eb 100644
+--- a/src/Parquet/Data/DataColumnStatistics.cs
++++ b/src/Parquet/Data/DataColumnStatistics.cs
+@@ -45,8 +45,59 @@ public class DataColumnStatistics {
+     /// </summary>
+     public object? MaxValue { get; internal set; }
+ 
+-    /// <summary>Number of NaN values (floating point columns only), written as nan_count.</summary>
+-    internal long? NanCount { get; set; }
++    /// <summary>
++    /// Whether <see cref="MinBytes"/> and <see cref="MaxBytes"/> (and so the min and max values) are present and
++    /// usable: written in the column's sort order, which is known.
++    /// </summary>
++    public bool HasMinMax => MinBytes != null && MaxBytes != null;
++
++    /// <summary>The minimum as written (PLAIN encoding of the column's physical type, without a length prefix).</summary>
++    public byte[]? MinBytes { get; internal set; }
++
++    /// <summary>The maximum as written (PLAIN encoding of the column's physical type, without a length prefix).</summary>
++    public byte[]? MaxBytes { get; internal set; }
++
++    /// <summary>
++    /// The minimum as a value of the column's physical type:
++    /// <c>bool</c>, <c>int</c>, <c>long</c>, <c>float</c>, <c>double</c>, or <c>byte[]</c> for byte arrays and INT96.
++    /// </summary>
++    public object? PhysicalMin => DecodePhysical(MinBytes);
++
++    /// <summary>The maximum as a value of the column's physical type (see <see cref="PhysicalMin"/>).</summary>
++    public object? PhysicalMax => DecodePhysical(MaxBytes);
++
++    /// <summary>The order the min and max follow, from the column's type (parquet-format "Sort Order").</summary>
++    public ColumnSortOrder SortOrder { get; internal set; } = ColumnSortOrder.Unknown;
++
++    /// <summary>
++    /// The min and max came from the deprecated <c>min</c>/<c>max</c> statistics fields (older writers), which are
++    /// only used when the column sorts signed.
++    /// </summary>
++    public bool IsLegacyMinMax { get; internal set; }
++
++    /// <summary>Whether the minimum is a value of the column (false: a lower bound, such as a truncated string).</summary>
++    public bool? IsMinExact { get; internal set; }
++
++    /// <summary>Whether the maximum is a value of the column (false: an upper bound).</summary>
++    public bool? IsMaxExact { get; internal set; }
++
++    /// <summary>Number of NaN values in a floating-point column, if written.</summary>
++    public long? NanCount { get; internal set; }
++
++    internal Meta.Type? PhysicalType { get; set; }
++
++    private object? DecodePhysical(byte[]? value) {
++        if(value == null)
++            return null;
++        return PhysicalType switch {
++            Meta.Type.BOOLEAN => value.Length > 0 && value[0] != 0,
++            Meta.Type.INT32 => BitConverter.ToInt32(value, 0),
++            Meta.Type.INT64 => BitConverter.ToInt64(value, 0),
++            Meta.Type.FLOAT => BitConverter.ToSingle(value, 0),
++            Meta.Type.DOUBLE => BitConverter.ToDouble(value, 0),
++            _ => value,
++        };
++    }
+ 
+     internal Statistics ToThriftStatistics(SchemaElement tse) {
+ 
+@@ -72,3 +123,17 @@ public class DataColumnStatistics {
+         };
+     }
+ }
++
++/// <summary>
++/// How a column's values are ordered for statistics (parquet-format LogicalTypes.md, "Sort Order").
++/// </summary>
++public enum ColumnSortOrder {
++    /// <summary>Signed comparison: numbers, dates, times, timestamps, decimals, booleans.</summary>
++    Signed,
++
++    /// <summary>Unsigned (byte-wise) comparison: strings and byte arrays, unsigned integers, UUIDs.</summary>
++    Unsigned,
++
++    /// <summary>No defined order (INT96, INTERVAL, or a column order the reader does not know): min and max are not usable.</summary>
++    Unknown,
++}
+diff --git a/src/Parquet/File/ThriftFooter.cs b/src/Parquet/File/ThriftFooter.cs
+index a395f7c..a7260ac 100644
+--- a/src/Parquet/File/ThriftFooter.cs
++++ b/src/Parquet/File/ThriftFooter.cs
+@@ -103,6 +103,9 @@ class ThriftFooter {
+         return ms.Length;
+     }
+ 
++    /// <summary>Sort order of each leaf column, in schema order, when the writer recorded them.</summary>
++    public List<ColumnOrder>? ColumnOrders => _fileMeta.ColumnOrders;
++
+     public SchemaElement? GetSchemaElement(ColumnChunk columnChunk) {
+         if(columnChunk == null) {
+             throw new ArgumentNullException(nameof(columnChunk));
+diff --git a/src/Parquet/ParquetRowGroupReader.cs b/src/Parquet/ParquetRowGroupReader.cs
+index 963b301..1659d09 100644
+--- a/src/Parquet/ParquetRowGroupReader.cs
++++ b/src/Parquet/ParquetRowGroupReader.cs
+@@ -321,10 +321,43 @@ public class ParquetRowGroupReader : IDisposable {
+ 
+         SchemaElement? se = _footer.GetSchemaElement(cc) ?? throw new ArgumentException("can't find schema element", nameof(cc));
+ 
+-        ParquetPlainEncoder.TryDecode(st.MinValue, se, _options, out object? min);
+-        ParquetPlainEncoder.TryDecode(st.MaxValue, se, _options, out object? max);
++        // The column order: TYPE_ORDER, unless the file says otherwise for this column.
++        ColumnSortOrder order = ColumnStatisticsRules.SortOrder(se);
++        List<ColumnOrder>? orders = _footer.ColumnOrders;
++        int ordinal = _rowGroup.Columns.IndexOf(cc);
++        if(orders != null && ordinal >= 0 && ordinal < orders.Count && orders[ordinal].TYPEORDER == null)
++            order = ColumnSortOrder.Unknown;
++
++        byte[]? minBytes = null, maxBytes = null;
++        bool legacy = false;
++        if(order != ColumnSortOrder.Unknown) {
++            if(st.MinValue != null && st.MaxValue != null) {
++                (minBytes, maxBytes) = (st.MinValue, st.MaxValue);
++            } else if(st.Min != null && st.Max != null && order == ColumnSortOrder.Signed
++                && se.Type != Meta.Type.BYTE_ARRAY && se.Type != Meta.Type.FIXED_LEN_BYTE_ARRAY) {
++                // deprecated fields, compared signed whatever the type: right only for signed numeric columns
++                // (older parquet-mr compared byte arrays, decimals among them, as signed bytes; PARQUET-251, PARQUET-1065)
++                (minBytes, maxBytes) = (st.Min, st.Max);
++                legacy = true;
++            }
++        }
++
++        object? min = null, max = null;
++        if(minBytes != null && maxBytes != null) {
++            ParquetPlainEncoder.TryDecode(minBytes, se, _options, out min);
++            ParquetPlainEncoder.TryDecode(maxBytes, se, _options, out max);
++        }
+ 
+-        return new DataColumnStatistics(st.NullCount, st.DistinctCount, min, max);
++        return new DataColumnStatistics(st.NullCount, st.DistinctCount, min, max) {
++            MinBytes = minBytes,
++            MaxBytes = maxBytes,
++            SortOrder = order,
++            IsLegacyMinMax = legacy,
++            IsMinExact = st.IsMinValueExact,
++            IsMaxExact = st.IsMaxValueExact,
++            NanCount = st.NanCount,
++            PhysicalType = se.Type
++        };
+     }
+ 
+ 

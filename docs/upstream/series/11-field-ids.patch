@@ -1,0 +1,170 @@
+diff --git a/src/Parquet.Test/Schema/FieldIdTest.cs b/src/Parquet.Test/Schema/FieldIdTest.cs
+new file mode 100644
+index 0000000..b32cd79
+--- /dev/null
++++ b/src/Parquet.Test/Schema/FieldIdTest.cs
+@@ -0,0 +1,68 @@
++using System.IO;
++using System.Linq;
++using System.Threading.Tasks;
++using Parquet.Schema;
++using Xunit;
++
++namespace Parquet.Test.Schema;
++
++public class FieldIdTest {
++
++    private static async Task<(ParquetSchema Schema, Meta.FileMetaData Meta)> RoundTripAsync(ParquetSchema schema) {
++        using var ms = new MemoryStream();
++        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(schema, ms)) {
++            // an empty row group is enough for the schema to be written
++        }
++        ms.Position = 0;
++        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
++        return (reader.Schema, reader.Metadata!);
++    }
++
++    [Fact]
++    public async Task Field_ids_round_trip_on_data_fields() {
++        var (schema, meta) = await RoundTripAsync(new ParquetSchema(
++            new DataField<long>("id") { FieldId = 1 },
++            new DataField<string>("name") { FieldId = 2 },
++            new DataField<int>("no_id")));
++
++        Assert.Equal(new[] { 1, 2, -1 }, schema.DataFields.Select(f => f.FieldId));
++        Assert.Equal(new int?[] { 1, 2, null }, meta.Schema.Skip(1).Select(e => e.FieldId));
++    }
++
++    [Fact]
++    public async Task Field_ids_round_trip_on_structs_lists_maps_and_their_children() {
++        var (schema, meta) = await RoundTripAsync(new ParquetSchema(
++            new StructField("point",
++                new DataField<int>("x") { FieldId = 11 },
++                new DataField<int>("y") { FieldId = 12 }) { FieldId = 10 },
++            new ListField("tags", new DataField<string>("element") { FieldId = 21 }) { FieldId = 20 },
++            new MapField("attrs",
++                new DataField("key", typeof(string), isNullable: false) { FieldId = 31 },
++                new DataField<long>("value") { FieldId = 32 }) { FieldId = 30 }));
++
++        var point = (StructField)schema.Fields[0];
++        Assert.Equal(10, point.FieldId);
++        Assert.Equal(new[] { 11, 12 }, point.Fields.Select(f => f.FieldId));
++
++        var tags = (ListField)schema.Fields[1];
++        Assert.Equal(20, tags.FieldId);
++        Assert.Equal(21, tags.Item.FieldId);
++
++        var attrs = (MapField)schema.Fields[2];
++        Assert.Equal(30, attrs.FieldId);
++        Assert.Equal(31, attrs.Key.FieldId);
++        Assert.Equal(32, attrs.Value.FieldId);
++
++        // On the wire: ids sit on the outer group of a list or map, not on its repeated container.
++        Assert.Equal(20, meta.Schema.Single(e => e.Name == "tags").FieldId);
++        Assert.Null(meta.Schema.Single(e => e.Name == "list").FieldId);
++        Assert.Equal(30, meta.Schema.Single(e => e.Name == "attrs").FieldId);
++        Assert.Null(meta.Schema.Single(e => e.Name == "key_value").FieldId);
++    }
++
++    [Fact]
++    public void Field_ids_default_to_none() {
++        Assert.Equal(-1, new DataField<int>("a").FieldId);
++        Assert.Equal(-1, new StructField("s", new DataField<int>("a")).FieldId);
++    }
++}
+diff --git a/src/Parquet/Encodings/SchemaEncoder.cs b/src/Parquet/Encodings/SchemaEncoder.cs
+index e9848a2..f5f2d2c 100644
+--- a/src/Parquet/Encodings/SchemaEncoder.cs
++++ b/src/Parquet/Encodings/SchemaEncoder.cs
+@@ -161,6 +161,7 @@ static class SchemaEncoder {
+         if(TryBuildDataField(se, options, out DataField? df)) {
+             f = df;
+             index++;
++            f!.FieldId = se.FieldId ?? -1;
+             return f;
+         }
+ 
+@@ -172,6 +173,9 @@ static class SchemaEncoder {
+             f = sf;
+         }
+ 
++        // A group's field_id is on its outer element (the LIST/MAP-annotated group, or the struct group).
++        if(f != null)
++            f.FieldId = se.FieldId ?? -1;
+         return f;
+     }
+ 
+@@ -384,7 +388,8 @@ static class SchemaEncoder {
+             ConvertedType = ConvertedType.LIST,
+             LogicalType = new LogicalType { LIST = new ListType() },
+             RepetitionType = listField.IsNullable ? FieldRepetitionType.OPTIONAL : FieldRepetitionType.REQUIRED,
+-            NumChildren = 1  //field container below
++            NumChildren = 1,  //field container below
++            FieldId = listField.FieldId != -1 ? listField.FieldId : null
+         };
+         container.Add(root);
+ 
+@@ -408,7 +413,8 @@ static class SchemaEncoder {
+             ConvertedType = ConvertedType.MAP,
+             LogicalType = new LogicalType { MAP = new MapType() },
+             NumChildren = 1,
+-            RepetitionType = mapField.IsNullable ? FieldRepetitionType.OPTIONAL : FieldRepetitionType.REQUIRED
++            RepetitionType = mapField.IsNullable ? FieldRepetitionType.OPTIONAL : FieldRepetitionType.REQUIRED,
++            FieldId = mapField.FieldId != -1 ? mapField.FieldId : null
+         };
+         container.Add(root);
+ 
+@@ -436,8 +442,9 @@ static class SchemaEncoder {
+     private static void Encode(StructField structField, SchemaElement parent, IList<SchemaElement> container, ParquetOptions options) {
+         var tseStruct = new SchemaElement {
+             Name = structField.Name,
+-            RepetitionType = structField.IsNullable ? FieldRepetitionType.OPTIONAL : FieldRepetitionType.REQUIRED
++            RepetitionType = structField.IsNullable ? FieldRepetitionType.OPTIONAL : FieldRepetitionType.REQUIRED,
+             // no logical or converted type annotations for structs
++            FieldId = structField.FieldId != -1 ? structField.FieldId : null
+         };
+         container.Add(tseStruct);
+         parent.NumChildren = (parent.NumChildren ?? 0) + 1;
+diff --git a/src/Parquet/Schema/DataField.cs b/src/Parquet/Schema/DataField.cs
+index 31e7a16..7b372f7 100644
+--- a/src/Parquet/Schema/DataField.cs
++++ b/src/Parquet/Schema/DataField.cs
+@@ -44,7 +44,6 @@ public class DataField : Field, ICloneable {
+ 
+     private bool _isNullable;
+     private bool _isArray;
+-    private int _fieldId = -1;
+ 
+     /// <summary>
+     /// When true, this element is allowed to have nulls.
+@@ -77,11 +76,6 @@ public class DataField : Field, ICloneable {
+     /// </summary>
+     public Type ClrNullableIfHasNullsType { get; set; } = typeof(void);
+ 
+-    /// <summary>
+-    /// Optional metadata integer, used in Lake implementations. If this field is set, writer will assign the appropriate metadata.
+-    /// See https://arrow.apache.org/docs/cpp/parquet.html#parquet-field-id
+-    /// </summary>
+-    public int FieldId { get => _fieldId; set => _fieldId = value; }
+ 
+     /// <summary>
+     /// Creates a new instance of <see cref="DataField"/> by name and CLR type.
+diff --git a/src/Parquet/Schema/Field.cs b/src/Parquet/Schema/Field.cs
+index 0b93d69..88531a8 100644
+--- a/src/Parquet/Schema/Field.cs
++++ b/src/Parquet/Schema/Field.cs
+@@ -31,6 +31,14 @@ public abstract class Field {
+     /// </summary>
+     public virtual bool IsNullable { get; internal set; } = false;
+ 
++    /// <summary>
++    /// Parquet <c>field_id</c>, or -1 when the field has none. Table formats (Apache Iceberg, DuckLake, Delta column
++    /// mapping) identify columns by it rather than by name, on every field: data fields, structs, lists and maps.
++    /// Written when set, and read back from the file's schema.
++    /// See https://arrow.apache.org/docs/cpp/parquet.html#parquet-field-id
++    /// </summary>
++    public int FieldId { get; set; } = -1;
++
+     /// <summary>
+     /// Max repetition level
+     /// </summary>

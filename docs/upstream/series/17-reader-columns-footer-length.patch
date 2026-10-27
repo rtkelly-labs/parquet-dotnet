@@ -1,0 +1,178 @@
+diff --git a/src/Parquet.Test/Schema/ColumnDescriptorTest.cs b/src/Parquet.Test/Schema/ColumnDescriptorTest.cs
+new file mode 100644
+index 0000000..5162a54
+--- /dev/null
++++ b/src/Parquet.Test/Schema/ColumnDescriptorTest.cs
+@@ -0,0 +1,50 @@
++using System;
++using System.IO;
++using System.Linq;
++using System.Threading.Tasks;
++using Parquet.Meta;
++using Parquet.Schema;
++using Xunit;
++
++namespace Parquet.Test.Schema;
++
++public class ColumnDescriptorTest {
++
++    [Fact]
++    public async Task Leaf_columns_as_stored() {
++        var id = new DataField<int>("id") { FieldId = 1 };
++        var uuid = new DataField<Guid>("uuid");
++        var name = new DataField<string>("name");
++        var tags = new ListField("tags", new DataField<long?>("element"));
++        var schema = new ParquetSchema(id, uuid, name, tags);
++        using var ms = new MemoryStream();
++        await using(ParquetWriter w = await ParquetWriter.CreateAsync(schema, ms)) {
++            using ParquetRowGroupWriter rg = w.CreateRowGroup();
++            await rg.WriteAsync<int>(id, new[] { 1 });
++            await rg.WriteAsync<Guid>(uuid, new[] { Guid.NewGuid() });
++            await rg.WriteAsync(name, new[] { "a" });
++            await rg.WriteAsync<long>(schema.GetDataFields()[3], new long?[] { 7 }, new[] { 0 });
++        }
++        byte[] file = ms.ToArray();
++        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
++        ColumnDescriptor[] columns = reader.Columns.ToArray();
++        Assert.Equal(4, columns.Length);
++
++        Assert.Equal((0, Meta.Type.INT32, 1), (columns[0].Ordinal, columns[0].PhysicalType, columns[0].FieldId));
++        Assert.Null(columns[0].TypeLength);
++        Assert.Equal((Meta.Type.FIXED_LEN_BYTE_ARRAY, 16), (columns[1].PhysicalType, columns[1].TypeLength));
++        Assert.NotNull(columns[1].LogicalType?.UUID);
++        Assert.Equal(Meta.Type.BYTE_ARRAY, columns[2].PhysicalType);
++        Assert.NotNull(columns[2].LogicalType?.STRING);
++        Assert.Equal(new FieldPath("tags", "list", "element"), columns[3].Path);
++
++        // levels and paths as the model schema has them
++        DataField[] model = reader.Schema.GetDataFields();
++        for(int i = 0; i < columns.Length; i++) {
++            Assert.Equal(model[i].Path, columns[i].Path);
++            Assert.Equal((model[i].MaxDefinitionLevel, model[i].MaxRepetitionLevel), (columns[i].MaxDefinitionLevel, columns[i].MaxRepetitionLevel));
++        }
++
++        Assert.Equal(BitConverter.ToInt32(file, file.Length - 8), reader.FooterLength);
++    }
++}
+diff --git a/src/Parquet/ParquetActor.cs b/src/Parquet/ParquetActor.cs
+index 4a41a17..1fc3146 100644
+--- a/src/Parquet/ParquetActor.cs
++++ b/src/Parquet/ParquetActor.cs
+@@ -39,8 +39,11 @@ public class ParquetActor {
+             throw new IOException($"not a parquet file, head: {head.ToHexString()}, tail: {tail.ToHexString()}");
+     }
+ 
++    internal int LastFooterLength { get; private set; }
++
+     internal async ValueTask<Parquet.Meta.FileMetaData> ReadMetadataAsync(CancellationToken cancellationToken = default) {
+         int footerLength = await GoBeforeFooterAsync();
++        LastFooterLength = footerLength;
+         byte[] footerData = await _fileStream.ReadBytesExactlyAsync(footerLength);
+         using var ms = new MemoryStream(footerData);
+         return Parquet.Meta.FileMetaData.Read(new Meta.Proto.ThriftCompactProtocolReader(ms));
+diff --git a/src/Parquet/ParquetReader.cs b/src/Parquet/ParquetReader.cs
+index a1d1b44..df95c32 100644
+--- a/src/Parquet/ParquetReader.cs
++++ b/src/Parquet/ParquetReader.cs
+@@ -41,6 +41,7 @@ public class ParquetReader : ParquetActor, IAsyncDisposable {
+ 
+         //read metadata instantly, now
+         _meta = await ReadMetadataAsync(cancellationToken);
++        FooterLength = LastFooterLength;
+         _thriftFooter = new ThriftFooter(_meta);
+ 
+         InitRowGroupReaders();
+@@ -119,6 +120,14 @@ public class ParquetReader : ParquetActor, IAsyncDisposable {
+     /// </summary>
+     public ParquetSchema Schema => _thriftFooter!.CreateModelSchema(_parquetOptions);
+ 
++    /// <summary>
++    /// The leaf columns as stored (physical type, annotations, field IDs, levels), in file order.
++    /// </summary>
++    public IReadOnlyList<ColumnDescriptor> Columns => ColumnDescriptor.Of(_meta!.Schema);
++
++    /// <summary>Length of the footer in bytes, as stored before the trailing magic.</summary>
++    public int FooterLength { get; private set; }
++
+     /// <summary>
+     /// Internal parquet metadata
+     /// </summary>
+diff --git a/src/Parquet/Schema/ColumnDescriptor.cs b/src/Parquet/Schema/ColumnDescriptor.cs
+new file mode 100644
+index 0000000..38224bb
+--- /dev/null
++++ b/src/Parquet/Schema/ColumnDescriptor.cs
+@@ -0,0 +1,73 @@
++using System.Collections.Generic;
++using Parquet.Data;
++using Parquet.Meta;
++
++namespace Parquet.Schema;
++
++/// <summary>
++/// A leaf column as stored: its physical type, annotations and levels, straight from the file's schema (no CLR type
++/// mapping), in file order.
++/// </summary>
++public sealed class ColumnDescriptor {
++    internal ColumnDescriptor(int ordinal, FieldPath path, SchemaElement element, int maxDefinitionLevel, int maxRepetitionLevel) {
++        Ordinal = ordinal;
++        Path = path;
++        SchemaElement = element;
++        MaxDefinitionLevel = maxDefinitionLevel;
++        MaxRepetitionLevel = maxRepetitionLevel;
++    }
++
++    /// <summary>Position among the leaf columns (the column ordinal of row group column chunks).</summary>
++    public int Ordinal { get; }
++
++    /// <summary>Path in the file's schema, group names included (<c>tags.list.element</c>).</summary>
++    public FieldPath Path { get; }
++
++    /// <summary>The thrift schema element.</summary>
++    public SchemaElement SchemaElement { get; }
++
++    /// <summary>Physical type.</summary>
++    public Type PhysicalType => SchemaElement.Type!.Value;
++
++    /// <summary>Byte length of FIXED_LEN_BYTE_ARRAY values; null otherwise.</summary>
++    public int? TypeLength => PhysicalType == Type.FIXED_LEN_BYTE_ARRAY ? SchemaElement.TypeLength : null;
++
++    /// <summary>Logical type annotation, if any.</summary>
++    public LogicalType? LogicalType => SchemaElement.LogicalType;
++
++    /// <summary>Legacy converted type annotation, if any.</summary>
++    public ConvertedType? ConvertedType => SchemaElement.ConvertedType;
++
++    /// <summary>Field ID, if the writer set one.</summary>
++    public int? FieldId => SchemaElement.FieldId;
++
++    /// <summary>Highest definition level (a value is present at this level).</summary>
++    public int MaxDefinitionLevel { get; }
++
++    /// <summary>Highest repetition level.</summary>
++    public int MaxRepetitionLevel { get; }
++
++    /// <inheritdoc/>
++    public override string ToString() => $"{Path} ({PhysicalType}, DL {MaxDefinitionLevel}, RL {MaxRepetitionLevel})";
++
++    /// <summary>The leaf columns of a flattened thrift schema (the root first).</summary>
++    internal static List<ColumnDescriptor> Of(List<SchemaElement> schema) {
++        var result = new List<ColumnDescriptor>();
++        int index = 1;
++        void Walk(int children, List<string> path, int def, int rep) {
++            for(int c = 0; c < children && index < schema.Count; c++) {
++                SchemaElement se = schema[index++];
++                int d = def + (se.RepetitionType is FieldRepetitionType.OPTIONAL or FieldRepetitionType.REPEATED ? 1 : 0);
++                int r = rep + (se.RepetitionType == FieldRepetitionType.REPEATED ? 1 : 0);
++                var p = new List<string>(path) { se.Name };
++                if(se.NumChildren is > 0)
++                    Walk(se.NumChildren.Value, p, d, r);
++                else
++                    result.Add(new ColumnDescriptor(result.Count, new FieldPath(p), se, d, r));
++            }
++        }
++        if(schema.Count > 0)
++            Walk(schema[0].NumChildren ?? 0, new List<string>(), 0, 0);
++        return result;
++    }
++}

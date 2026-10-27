@@ -1,0 +1,81 @@
+diff --git a/src/Parquet.Test/ParquetReaderTest.cs b/src/Parquet.Test/ParquetReaderTest.cs
+index d92299a..27a1d78 100644
+--- a/src/Parquet.Test/ParquetReaderTest.cs
++++ b/src/Parquet.Test/ParquetReaderTest.cs
+@@ -371,4 +371,19 @@ public class ParquetReaderTest : TestBase {
+ 
+         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+     }
+-}
+\ No newline at end of file
++
++    [Fact]
++    public async Task Header_magic_check_can_be_skipped() {
++        var field = new DataField<int>("a");
++        var ms = new MemoryStream();
++        await using(ParquetWriter w = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms)) {
++            using ParquetRowGroupWriter rg = w.CreateRowGroup();
++            await rg.WriteAsync<int>(field, new[] { 1 });
++        }
++        byte[] bytes = ms.ToArray();
++        bytes[0] = (byte)'X';   // a damaged head: refused by default, ignored when not checked
++        await Assert.ThrowsAsync<IOException>(() => ParquetReader.CreateAsync(new MemoryStream(bytes)));
++        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(bytes), new ParquetOptions { ValidateHeaderMagic = false });
++        Assert.Equal(1, reader.RowGroups[0].RowCount);
++    }
++}
+diff --git a/src/Parquet/ParquetActor.cs b/src/Parquet/ParquetActor.cs
+index 4a41a17..a570907 100644
+--- a/src/Parquet/ParquetActor.cs
++++ b/src/Parquet/ParquetActor.cs
+@@ -28,13 +28,16 @@ public class ParquetActor {
+     /// </summary>
+     /// <returns></returns>
+     /// <exception cref="IOException"></exception>
+-    protected async Task ValidateFileAsync() {
+-        _fileStream.Seek(0, SeekOrigin.Begin);
+-        byte[] head = await _fileStream.ReadBytesExactlyAsync(4);
+-
++    protected async Task ValidateFileAsync(bool checkHead = true) {
+         _fileStream.Seek(-4, SeekOrigin.End);
+         byte[] tail = await _fileStream.ReadBytesExactlyAsync(4);
+ 
++        byte[] head = tail;     // the head is not read when not checked
++        if(checkHead) {
++            _fileStream.Seek(0, SeekOrigin.Begin);
++            head = await _fileStream.ReadBytesExactlyAsync(4);
++        }
++
+         if(!MagicBytes.SequenceEqual(head) || !MagicBytes.SequenceEqual(tail))
+             throw new IOException($"not a parquet file, head: {head.ToHexString()}, tail: {tail.ToHexString()}");
+     }
+diff --git a/src/Parquet/ParquetOptions.cs b/src/Parquet/ParquetOptions.cs
+index c5d33c4..84b451c 100644
+--- a/src/Parquet/ParquetOptions.cs
++++ b/src/Parquet/ParquetOptions.cs
+@@ -91,6 +91,12 @@ public class ParquetOptions {
+     /// </summary>
+     public bool UseBigDecimal { get; set; } = false;
+ 
++    /// <summary>
++    /// Check the magic bytes at the start of a file as well as at its end (default). Readers over ranged storage turn
++    /// this off to save a request for the first four bytes; the footer and its trailing magic are always checked.
++    /// </summary>
++    public bool ValidateHeaderMagic { get; set; } = true;
++
+     internal Type DecimalType => UseBigDecimal ? typeof(BigDecimal) : typeof(decimal);
+ 
+     /// <summary>
+diff --git a/src/Parquet/ParquetReader.cs b/src/Parquet/ParquetReader.cs
+index a1d1b44..8a92241 100644
+--- a/src/Parquet/ParquetReader.cs
++++ b/src/Parquet/ParquetReader.cs
+@@ -37,7 +37,7 @@ public class ParquetReader : ParquetActor, IAsyncDisposable {
+     }
+ 
+     private async Task InitialiseAsync(CancellationToken cancellationToken) {
+-        await ValidateFileAsync();
++        await ValidateFileAsync(_parquetOptions.ValidateHeaderMagic);
+ 
+         //read metadata instantly, now
+         _meta = await ReadMetadataAsync(cancellationToken);

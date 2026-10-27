@@ -1,0 +1,83 @@
+diff --git a/src/Parquet.Test/WriteStatisticsOptionTest.cs b/src/Parquet.Test/WriteStatisticsOptionTest.cs
+new file mode 100644
+index 0000000..db42911
+--- /dev/null
++++ b/src/Parquet.Test/WriteStatisticsOptionTest.cs
+@@ -0,0 +1,38 @@
++using System;
++using System.IO;
++using System.Threading.Tasks;
++using Parquet.Schema;
++using Xunit;
++
++namespace Parquet.Test;
++public class WriteStatisticsOptionTest {
++
++    [Fact]
++    public async Task Statistics_can_be_left_out() {
++        var field = new DataField<long>("id");
++        using var ms = new MemoryStream();
++        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms, new ParquetOptions { WriteStatistics = false })) {
++            using ParquetRowGroupWriter rg = writer.CreateRowGroup();
++            await rg.WriteAsync<long>(field, new long[] { 1, 2, 3 }.AsMemory());
++        }
++        ms.Position = 0;
++        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
++        Assert.Null(reader.Metadata!.RowGroups[0].Columns[0].MetaData!.Statistics);
++        var values = new long[3];
++        await reader.OpenRowGroupReader(0).ReadRawAsync<long>(reader.Schema.DataFields[0], values, null, null);
++        Assert.Equal(new long[] { 1, 2, 3 }, values);
++    }
++
++    [Fact]
++    public async Task Statistics_are_written_by_default() {
++        var field = new DataField<long>("id");
++        using var ms = new MemoryStream();
++        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms)) {
++            using ParquetRowGroupWriter rg = writer.CreateRowGroup();
++            await rg.WriteAsync<long>(field, new long[] { 1, 2, 3 }.AsMemory());
++        }
++        ms.Position = 0;
++        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
++        Assert.NotNull(reader.Metadata!.RowGroups[0].Columns[0].MetaData!.Statistics);
++    }
++}
+diff --git a/src/Parquet/File/DataColumnWriter.cs b/src/Parquet/File/DataColumnWriter.cs
+index d5b5493..83f8b20 100644
+--- a/src/Parquet/File/DataColumnWriter.cs
++++ b/src/Parquet/File/DataColumnWriter.cs
+@@ -54,7 +54,7 @@ class DataColumnWriter {
+         chunk.MetaData.Encodings = metrics.GetUsedEncodings();
+ 
+         //generate stats for column chunk
+-        chunk.MetaData.Statistics = wc.Statistics.ToThriftStatistics(_schemaElement);
++        chunk.MetaData.Statistics = _options.WriteStatistics ? wc.Statistics.ToThriftStatistics(_schemaElement) : null;
+ 
+         //the following counters must include both data size and header size
+         chunk.MetaData.TotalCompressedSize = metrics.CompressedSize;
+@@ -180,7 +180,7 @@ class DataColumnWriter {
+                 }
+             }
+ 
+-            dph.Statistics = wc.Statistics.ToThriftStatistics(tse);
++            dph.Statistics = _options.WriteStatistics ? wc.Statistics.ToThriftStatistics(tse) : null;
+             await CompressAndWriteAsync(ph, ms, r, cancellationToken);
+         }
+ 
+diff --git a/src/Parquet/ParquetOptions.cs b/src/Parquet/ParquetOptions.cs
+index c5d33c4..c85a85d 100644
+--- a/src/Parquet/ParquetOptions.cs
++++ b/src/Parquet/ParquetOptions.cs
+@@ -91,6 +91,12 @@ public class ParquetOptions {
+     /// </summary>
+     public bool UseBigDecimal { get; set; } = false;
+ 
++    /// <summary>
++    /// Write min/max/null-count statistics in column chunk metadata and data page headers (the default). Files whose
++    /// statistics are never used for pruning (position delete files, for instance) can leave them out.
++    /// </summary>
++    public bool WriteStatistics { get; set; } = true;
++
+     internal Type DecimalType => UseBigDecimal ? typeof(BigDecimal) : typeof(decimal);
+ 
+     /// <summary>

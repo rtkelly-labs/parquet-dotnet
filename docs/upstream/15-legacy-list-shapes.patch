@@ -1,0 +1,320 @@
+diff --git a/src/Parquet.Test/Schema/LegacyListTest.cs b/src/Parquet.Test/Schema/LegacyListTest.cs
+new file mode 100644
+index 0000000..f4bd7ec
+--- /dev/null
++++ b/src/Parquet.Test/Schema/LegacyListTest.cs
+@@ -0,0 +1,137 @@
++using System.Collections.Generic;
++using System.IO;
++using System.Text.Json.Serialization;
++using System.Threading.Tasks;
++using Parquet.Data;
++using Parquet.Schema;
++using Parquet.Serialization;
++using Parquet.Serialization.Attributes;
++using Xunit;
++
++namespace Parquet.Test.Schema;
++
++/// <summary>
++/// List shapes written by older writers, which the format's backward-compatibility rules require readers to accept
++/// (LogicalTypes.md, "Lists"). Each file holds the rows [1, 2], [], null, [3] in an optional LIST column "tags"
++/// (bare_repeated: a repeated int32 "tags", with [] for the null row). Written by parquet-cpp (ParquetSharp).
++/// </summary>
++public class LegacyListTest : TestBase {
++
++    class Ints {
++        [JsonPropertyName("tags")]
++        public List<int>? Tags { get; set; }
++    }
++
++    class NullableInts {
++        [JsonPropertyName("tags")]
++        public List<int?>? Tags { get; set; }
++    }
++
++    class Item {
++        [JsonPropertyName("item")]
++        public int Value { get; set; }
++    }
++
++    class Items {
++        [JsonPropertyName("tags")]
++        [ParquetListElementRequired]
++        public List<Item>? Tags { get; set; }
++    }
++
++    async Task<RawColumnData> ReadOnlyColumn(Stream s, ParquetReader reader) {
++        using ParquetRowGroupReader rg = reader.OpenRowGroupReader(0);
++        return await rg.ReadRawColumnDataBaseAsync(reader.Schema.GetDataFields()[0]);
++    }
++
++    [Fact]
++    public async Task Three_level_list() {
++        using Stream s = OpenTestFile("legacy/three_level.parquet");
++        IList<NullableInts> rows = (await ParquetSerializer.DeserializeAsync<NullableInts>(s)).Data;
++        Assert.Equal(new int?[] { 1, 2 }, rows[0].Tags);
++        Assert.Empty(rows[1].Tags!);
++        Assert.Null(rows[2].Tags);
++        Assert.Equal(new int?[] { 3 }, rows[3].Tags);
++    }
++
++    // Rule 1: the repeated field is a primitive, so it is the (required) element.
++    [Fact]
++    public async Task Two_level_list_of_primitives() {
++        using Stream s = OpenTestFile("legacy/two_level.parquet");
++        await using(ParquetReader reader = await ParquetReader.CreateAsync(s)) {
++            ListField list = Assert.IsType<ListField>(Assert.Single(reader.Schema.Fields));
++            DataField item = Assert.IsAssignableFrom<DataField>(list.Item);
++            Assert.Equal(typeof(int), item.ClrType);
++            Assert.Equal((2, 1), (item.MaxDefinitionLevel, item.MaxRepetitionLevel));
++        }
++
++        s.Position = 0;
++        IList<Ints> rows = (await ParquetSerializer.DeserializeAsync<Ints>(s)).Data;
++        Assert.Equal(new[] { 1, 2 }, rows[0].Tags);
++        Assert.Empty(rows[1].Tags!);
++        Assert.Null(rows[2].Tags);
++        Assert.Equal(new[] { 3 }, rows[3].Tags);
++    }
++
++    // Rule 3: a repeated group named "array" or "<list>_tuple" with one field is itself the element, a struct.
++    [Theory]
++    [InlineData("array_group", "array")]
++    [InlineData("tuple_group", "tags_tuple")]
++    public async Task Repeated_group_named_array_or_tuple_is_a_struct_element(string file, string group) {
++        using Stream s = OpenTestFile($"legacy/{file}.parquet");
++        await using(ParquetReader reader = await ParquetReader.CreateAsync(s)) {
++            ListField list = Assert.IsType<ListField>(Assert.Single(reader.Schema.Fields));
++            StructField element = Assert.IsType<StructField>(list.Item);
++            Assert.Equal(group, element.Name);
++            Assert.False(element.IsNullable);
++            DataField item = Assert.IsAssignableFrom<DataField>(Assert.Single(element.Fields));
++            Assert.Equal("item", item.Name);
++            Assert.Equal((2, 1), (item.MaxDefinitionLevel, item.MaxRepetitionLevel));
++            Assert.Equal(new FieldPath("tags", group, "item"), item.Path);
++
++            RawColumnData raw = await ReadOnlyColumn(s, reader);
++            Assert.Equal(new[] { 2, 2, 1, 0, 2 }, raw.DefinitionLevels.ToArray());
++            Assert.Equal(new[] { 0, 1, 0, 0, 0 }, raw.RepetitionLevels.ToArray());
++        }
++
++        s.Position = 0;
++        IList<Items> rows = (await ParquetSerializer.DeserializeAsync<Items>(s)).Data;
++        Assert.Equal(new[] { 1, 2 }, rows[0].Tags!.ConvertAll(i => i.Value));
++        Assert.Empty(rows[1].Tags!);
++        Assert.Null(rows[2].Tags);
++        Assert.Equal(new[] { 3 }, rows[3].Tags!.ConvertAll(i => i.Value));
++    }
++
++    // A repeated primitive outside a LIST group is a required list of required elements.
++    [Fact]
++    public async Task Bare_repeated_primitive() {
++        using Stream s = OpenTestFile("legacy/bare_repeated.parquet");
++        await using ParquetReader reader = await ParquetReader.CreateAsync(s);
++        DataField f = Assert.IsAssignableFrom<DataField>(Assert.Single(reader.Schema.Fields));
++        Assert.True(f.IsArray);
++        RawColumnData raw = await ReadOnlyColumn(s, reader);
++        Assert.Equal(new[] { 1, 1, 0, 0, 1 }, raw.DefinitionLevels.ToArray());
++        Assert.Equal(new[] { 0, 1, 0, 0, 0 }, raw.RepetitionLevels.ToArray());
++    }
++
++    // Rule 2: a repeated group with several fields is the element.
++    [Fact]
++    public async Task Repeated_group_with_several_fields_is_a_struct_element() {
++        var schema = new List<Meta.SchemaElement> {
++            new() { Name = "schema", NumChildren = 1 },
++            new() { Name = "points", NumChildren = 1, RepetitionType = Meta.FieldRepetitionType.OPTIONAL,
++                ConvertedType = Meta.ConvertedType.LIST },
++            new() { Name = "point", NumChildren = 2, RepetitionType = Meta.FieldRepetitionType.REPEATED },
++            new() { Name = "x", Type = Meta.Type.INT32, RepetitionType = Meta.FieldRepetitionType.REQUIRED },
++            new() { Name = "y", Type = Meta.Type.INT32, RepetitionType = Meta.FieldRepetitionType.OPTIONAL },
++        };
++        ParquetSchema decoded = new File.ThriftFooter(new Meta.FileMetaData { Schema = schema, RowGroups = new() })
++            .CreateModelSchema(new ParquetOptions());
++        ListField list = Assert.IsType<ListField>(Assert.Single(decoded.Fields));
++        StructField element = Assert.IsType<StructField>(list.Item);
++        Assert.Equal(2, element.Fields.Count);
++        DataField[] leaves = decoded.GetDataFields();
++        Assert.Equal((2, 1), (leaves[0].MaxDefinitionLevel, leaves[0].MaxRepetitionLevel));
++        Assert.Equal((3, 1), (leaves[1].MaxDefinitionLevel, leaves[1].MaxRepetitionLevel));
++        Assert.Equal(new FieldPath("points", "point", "y"), leaves[1].Path);
++    }
++}
+diff --git a/src/Parquet.Test/data/legacy/array_group.parquet b/src/Parquet.Test/data/legacy/array_group.parquet
+new file mode 100644
+index 0000000000000000000000000000000000000000..220132a9c9a7a7a1e11d04946ba13cc2714f34bc
+GIT binary patch
+literal 335
+zcmX|-%}T>S5XUEzbqPHs;w(F|hfp+BXp0phJ>*cqV-CeP2qkC_wK0hrZ$6qY;=6Q`
+zh=*ZV{vZ5iw+~M%Qe?^IqzTReJODr$Uxt9DG@a9gLQ(affW72jBKlXr5wcZ%M%EBP
+zHj0w~`5sXNJCo6)>AMu?DOla?Udls32q{|C7S9bK={yrhs_a=&*Tt8Jgx6rzzAX=6
+z0(R^YaD<$K4tYJqM(bc9FcZ_6F3FO>jTj@7QL_PRd_@uPT#l9U{<2V3cJogP=EtK8
+y^X<_Fq%24R)4?pRiu&!nY!|z#S_s_nGyW*+W`BH*@6zS%a>dRG`mfAZzVZZ-gDrOe
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/Parquet.Test/data/legacy/bare_repeated.parquet b/src/Parquet.Test/data/legacy/bare_repeated.parquet
+new file mode 100644
+index 0000000000000000000000000000000000000000..a3e4c384516b3a3dac16f9e745630b8103919277
+GIT binary patch
+literal 291
+zcmXw#!D_=W42D(L7}Ha-O~L{nd}vJvX=w+!g~4{-q4W(x30n_av!u&zd#PUca8r`?
+z@FV0Oefq84(|(H@9l94Z2sZ!|08pZ-2mu3z3}={#YyJ&2*tcpr2Tm0`-H%8aCKQwA
+zXcb3ofISuXOg%|+mV-0x;jMZvQ30xjcKTetwm_CW`v@Kt=U@^+_3sEYqmH^*MC(WT
+zxQg_0*fn-(3Y^IogxKdzq!jnp06@PJyrUm{1VPzose@&x%jWZ|I<F3Oy(*jL^c}jY
+WX^*Fm@Q|-J>n(dPkuRd1oaYZEDI>7}
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/Parquet.Test/data/legacy/three_level.parquet b/src/Parquet.Test/data/legacy/three_level.parquet
+new file mode 100644
+index 0000000000000000000000000000000000000000..d681d1841ca5dc858cc2902a5b86bf6c4afe81da
+GIT binary patch
+literal 341
+zcmYLF%Syvg5S>geF?5xPbGZW-3`IkQwpbzHA{#|qWl{WtP%c{NBPLO^^xOOtzr;zR
+zxHt^MIcMg~tnZ#yq{xsdC?Gfm@Bjb>zJP$HG@a9gB4LAH0(;6o_tC!qj**S(JyHe>
+zvR0gi$d8B+09&2YgYJhZE;2Advw3m*k`OX9sx6-zLJEpp6qzz=w{2SC2rto`xSiX(
+zLkl`&%Qgi|$Qc9?-wwt>{3jyN6W!@9&C}41S;k;m&4y%S7stSJxmY&z=S5QTtN*y5
+zzdSnApB~+VObgRccQ8w;vVMJY?P60^i?XhdAIZC`o9*$C++@q^<%+G9{NIALJoE=G
+CQ!iWq
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/Parquet.Test/data/legacy/tuple_group.parquet b/src/Parquet.Test/data/legacy/tuple_group.parquet
+new file mode 100644
+index 0000000000000000000000000000000000000000..2331700bb1c04f4707551203c52c2625d46134bd
+GIT binary patch
+literal 345
+zcmYjN!AiqG5S>hyCFGQdv+T$oLeWs6Emnwl$U(tl4#gjkP=Xe$jY+CG`f2`+ztKq|
+z;^8suzV~L|+x7k9iWFJ0Icb6u01p6AFcA>Yl%{hEC=^!z64+CdGsMX`aD;4C?~yTB
+zkd5NRN4`PSz|Lg!VESE(^AxOZHZSF_AcPdHYK!NFkaV7jB2_l%FP_>%^;(L8@B*yb
+zw&f0t&yHOJj*wH(A>R((fBHd3U;@*bF3A$#je*8=M$LwJ<0*=O=Tci<=sSiovdh2B
+zV7@&%HD4axfh_YA-*hmGtD=5Cl<i_uRg0po_n+}cSvTALTYQ}^ua+xzPD=a;*7B)G
+D8X_^h
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/Parquet.Test/data/legacy/two_level.parquet b/src/Parquet.Test/data/legacy/two_level.parquet
+new file mode 100644
+index 0000000000000000000000000000000000000000..f04b2c3cf194d974b9ff5dc016b5dc21b7dc4e71
+GIT binary patch
+literal 319
+zcmX|-!AitH42IKm9Lk<rF<~NeD2tW~yNfH-Qx6Ir_ptZ|Whv@Gx3;U+n~&xT_)ey+
+zc=!p!pZxhU+uQp!8FJ({WC@M|0suf&s3M>_%@;JISY7*P;9!NPh~XJXg5u0Dqh%aH
+zVIx_Da*b#~JePFGLza=U0B5`1WBptaLV?a4s)vq{?4}$#@Z7kgs%@)J;7Gjq3_PI}
+zU}MS0-pM848TZ_0Wfu8q?Zm()A0eh!l7KAqI1L^yiM5m$|75`50iEzyKsTUaQ5JCz
+odD>L%>sx(T?wV$)DEp7}y>7dw{Y!dPtS(n;@m^7XR9pSJUl3m@eE<Le
+
+literal 0
+HcmV?d00001
+
+diff --git a/src/Parquet/Encodings/SchemaEncoder.cs b/src/Parquet/Encodings/SchemaEncoder.cs
+index 5d7ce28..8409f22 100644
+--- a/src/Parquet/Encodings/SchemaEncoder.cs
++++ b/src/Parquet/Encodings/SchemaEncoder.cs
+@@ -73,12 +73,18 @@ static class SchemaEncoder {
+         }
+ 
+         // Rule 2. If the repeated field is a group with multiple fields, then its type is the element type and elements are required.
+-        // todo: not implemented
+-
+         // Rule 3. If the repeated field is a group with one field and is named either "array" or uses
+         // the "LIST"-annotated group's name with "_tuple" appended then the repeated type is the element
+         // type and elements are required.
+-        // todo: not implemented fully, only "array"
++        // The element is then a required struct: the repeated group itself (see TryBuildStruct).
++        if(midGroup.NumChildren > 1 || midGroup.Name == "array" || midGroup.Name == outerGroup.Name + "_tuple") {
++            field.Path = new FieldPath(outerGroup.Name);
++            field.SchemaElement = outerGroup;
++            field.GroupSchemaElement = midGroup;    // the list repeats at this group
++            index += 1; //only skip this element
++            ownedChildren = 1;  // next element (the repeated group) is list's item
++            return true;
++        }
+ 
+         // Normal "modern" LIST:
+         // as we are skipping elements set path hint
+@@ -137,7 +143,8 @@ static class SchemaEncoder {
+         index++;
+         ownedChildren = container.NumChildren ?? 0; //make them owned to receive in .Assign()
+         field = StructField.CreateWithNoElements(container.Name);
+-        field.IsNullable = container.RepetitionType != FieldRepetitionType.REQUIRED;
++        // a repeated group here is a legacy list's element (rules 2 and 3 in TryBuildList), which is required
++        field.IsNullable = container.RepetitionType == FieldRepetitionType.OPTIONAL;
+         field.SchemaElement = container;
+         return true;
+     }
+diff --git a/src/Parquet/Serialization/ParquetSerializer.cs b/src/Parquet/Serialization/ParquetSerializer.cs
+index 8ea15f1..ec9eead 100644
+--- a/src/Parquet/Serialization/ParquetSerializer.cs
++++ b/src/Parquet/Serialization/ParquetSerializer.cs
+@@ -360,8 +360,40 @@ public static class ParquetSerializer {
+         await DeserializeRowGroupAsync(rg, reader.Schema, asm, result, options, progress, cancellationToken);
+     }
+ 
+-    private static DataField? MakeForReading(ParquetSchema fileSchema, DataField assemblerField, ParquetOptions? options) {
++    /// <summary>
++    /// Each data field's path made of field names only: list elements and map keys and values are marked by position,
++    /// whatever their groups are called in the file.
++    /// </summary>
++    private static Dictionary<DataField, string> LogicalPaths(ParquetSchema schema) {
++        var result = new Dictionary<DataField, string>(ReferenceEqualityComparer.Instance);
++        void Walk(Field f, string path) {
++            switch(f) {
++                case DataField df:
++                    result[df] = path;
++                    break;
++                case ListField lf:
++                    Walk(lf.Item, path + "/[]");
++                    break;
++                case MapField mf:
++                    Walk(mf.Key, path + "/{key}");
++                    Walk(mf.Value, path + "/{value}");
++                    break;
++                case StructField sf:
++                    foreach(Field c in sf.Fields)
++                        Walk(c, path + "/" + c.Name);
++                    break;
++            }
++        }
++        foreach(Field f in schema.Fields)
++            Walk(f, f.Name);
++        return result;
++    }
++
++    private static DataField? MakeForReading(ParquetSchema fileSchema, ParquetSchema classSchema, DataField assemblerField, ParquetOptions? options) {
+         DataField? fileField;
++        StringComparison comparison = options != null && options.PropertyNameCaseInsensitive
++            ? StringComparison.OrdinalIgnoreCase
++            : StringComparison.Ordinal;
+ 
+         if(options != null && options.PropertyNameCaseInsensitive) {
+             // case-insensitive search
+@@ -371,6 +403,13 @@ public static class ParquetSerializer {
+             fileField = fileSchema.DataFields.FirstOrDefault(f => f.Path.Equals(assemblerField.Path));
+         }
+ 
++        // Lists and maps whose container and element groups are named differently from the class schema's
++        // ("array", "bag", "<name>_tuple", "key_value" and so on, from other writers): match by field names only.
++        if(fileField == null && LogicalPaths(classSchema).TryGetValue(assemblerField, out string? logical)) {
++            fileField = LogicalPaths(fileSchema)
++                .FirstOrDefault(p => p.Value.Equals(logical, comparison)).Key;
++        }
++
+         if(fileField == null)
+             return null;
+ 
+@@ -423,7 +462,7 @@ public static class ParquetSerializer {
+ 
+             cancellationToken.ThrowIfCancellationRequested();
+ 
+-            DataField? readerField = MakeForReading(schema, fasm.Field, options);
++            DataField? readerField = MakeForReading(schema, asm.Schema, fasm.Field, options);
+ 
+             // skips column deserialisation if it doesn't exist in file's schema
+             if(readerField == null)

@@ -1,0 +1,137 @@
+diff --git a/src/Parquet.Test/Serialisation/NullableListElementTest.cs b/src/Parquet.Test/Serialisation/NullableListElementTest.cs
+new file mode 100644
+index 0000000..4bfb94c
+--- /dev/null
++++ b/src/Parquet.Test/Serialisation/NullableListElementTest.cs
+@@ -0,0 +1,71 @@
++using System.Collections.Generic;
++using System.IO;
++using System.Threading.Tasks;
++using Parquet.Data;
++using Parquet.Serialization;
++using Xunit;
++
++namespace Parquet.Test.Serialisation;
++
++/// <summary>Lists of nullable elements keep their null elements, and empty lists stay empty rather than null.</summary>
++public class NullableListElementTest : TestBase {
++
++    class Ints {
++        public List<int?>? Tags { get; set; }
++    }
++
++    class Strings {
++        public List<string?>? Tags { get; set; }
++    }
++
++    class Arrays {
++        public int?[]? Tags { get; set; }
++    }
++
++    [Fact]
++    public async Task Nullable_ints() {
++        Ints[] data = [new() { Tags = [1, null, 2] }, new() { Tags = [] }, new(), new() { Tags = [null] }, new() { Tags = [3] }];
++        using var ms = new MemoryStream();
++        await ParquetSerializer.SerializeAsync(data, ms);
++
++        ms.Position = 0;
++        await using(ParquetReader reader = await ParquetReader.CreateAsync(ms)) {
++            using ParquetRowGroupReader rg = reader.OpenRowGroupReader(0);
++            RawColumnData raw = await rg.ReadRawColumnDataBaseAsync(reader.Schema.GetDataFields()[0]);
++            Assert.Equal(new[] { 3, 2, 3, 1, 0, 2, 3 }, raw.DefinitionLevels.ToArray());
++        }
++
++        ms.Position = 0;
++        IList<Ints> rows = (await ParquetSerializer.DeserializeAsync<Ints>(ms)).Data;
++        Assert.Equal(new int?[] { 1, null, 2 }, rows[0].Tags);
++        Assert.Empty(rows[1].Tags!);
++        Assert.Null(rows[2].Tags);
++        Assert.Equal(new int?[] { null }, rows[3].Tags);
++        Assert.Equal(new int?[] { 3 }, rows[4].Tags);
++    }
++
++    [Fact]
++    public async Task Nullable_strings() {
++        Strings[] data = [new() { Tags = ["a", null, "b"] }, new() { Tags = [] }, new(), new() { Tags = [null] }];
++        using var ms = new MemoryStream();
++        await ParquetSerializer.SerializeAsync(data, ms);
++        ms.Position = 0;
++        IList<Strings> rows = (await ParquetSerializer.DeserializeAsync<Strings>(ms)).Data;
++        Assert.Equal(new[] { "a", null, "b" }, rows[0].Tags);
++        Assert.Empty(rows[1].Tags!);
++        Assert.Null(rows[2].Tags);
++        Assert.Equal(new string?[] { null }, rows[3].Tags);
++    }
++
++    [Fact]
++    public async Task Nullable_int_arrays() {
++        Arrays[] data = [new() { Tags = [1, null, 2] }, new() { Tags = [] }, new()];
++        using var ms = new MemoryStream();
++        await ParquetSerializer.SerializeAsync(data, ms);
++        ms.Position = 0;
++        IList<Arrays> rows = (await ParquetSerializer.DeserializeAsync<Arrays>(ms)).Data;
++        Assert.Equal(new int?[] { 1, null, 2 }, rows[0].Tags);
++        Assert.Empty(rows[1].Tags!);
++        Assert.Null(rows[2].Tags);
++    }
++}
+diff --git a/src/Parquet/Serialization/Dremel/FieldAssemblerCompiler.cs b/src/Parquet/Serialization/Dremel/FieldAssemblerCompiler.cs
+index a81a60f..ad5a9f5 100644
+--- a/src/Parquet/Serialization/Dremel/FieldAssemblerCompiler.cs
++++ b/src/Parquet/Serialization/Dremel/FieldAssemblerCompiler.cs
+@@ -339,7 +339,8 @@ class FieldAssemblerCompiler<TClass> {
+ 
+     private static void GetReadLevels(Field f, out int dlDepth, out int rlDepth) {
+         if(f is ListField lf && lf.Item.IsAtomic) {
+-            dlDepth = lf.Item.MaxDefinitionLevel;
++            // the level at which an element exists; a nullable element is one level deeper when it has a value
++            dlDepth = ElementLevel(lf);
+             rlDepth = lf.Item.MaxRepetitionLevel;
+         } else {
+             dlDepth = f.MaxDefinitionLevel;
+@@ -347,6 +348,9 @@ class FieldAssemblerCompiler<TClass> {
+         }
+     }
+ 
++    private static int ElementLevel(ListField lf) =>
++        lf.Item.MaxDefinitionLevel - (lf.Item is DataField { IsNullable: true, IsArray: false } ? 1 : 0);
++
+     private static Type GetIdealUntypedType(Field f) {
+         switch(f.SchemaType) {
+             case SchemaType.Data:
+@@ -495,6 +499,20 @@ class FieldAssemblerCompiler<TClass> {
+     }
+ 
+ 
++    /// <summary>
++    /// The current value as a collection element: null (default) for a null element of a list of nullable items,
++    /// whose definition level stops one short of the item's.
++    /// </summary>
++    private Expression ElementValue(Field schemaField, Type elementType) {
++        Expression value = DataConverter.Convert(_dataElementVar, _dataElementVar.Type, elementType);
++        if(schemaField is ListField lf && ElementLevel(lf) < lf.Item.MaxDefinitionLevel)
++            return Expression.Condition(
++                Expression.Equal(_dlVar, Expression.Constant(lf.Item.MaxDefinitionLevel)),
++                value,
++                Expression.Default(elementType));
++        return value;
++    }
++
+     private Expression AssembleRecord(
+         Expression rootVar, Type rootType, Field? parentField,
+         IReadOnlyCollection<Field> schemaPath) {
+@@ -538,12 +556,12 @@ class FieldAssemblerCompiler<TClass> {
+                     // add element to array
+                     leafExpr = Expression.Assign(
+                         currentVar,
+-                        RebuildArray(currentVar, currentVarType, DataConverter.Convert(_dataElementVar, _dataElementVar.Type, collectionElementType)));
++                        RebuildArray(currentVar, currentVarType, ElementValue(schemaField, collectionElementType)));
+                 } else {
+                     // add element to collection - end here
+                     leafExpr = Expression.Call(Expression.Convert(currentVar, currentVarType),
+                         currentVarType.GetMethod(nameof(IList.Add))!,
+-                        DataConverter.Convert(_dataElementVar, _dataElementVar.Type, collectionElementType));
++                        ElementValue(schemaField, collectionElementType));
+                 }
+ 
+ #if DEBUG
