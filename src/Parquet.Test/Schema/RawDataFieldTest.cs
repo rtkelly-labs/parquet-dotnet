@@ -189,4 +189,19 @@ public class RawDataFieldTest {
         DataColumnStatistics st = reader.OpenRowGroupReader(0).GetStatistics(reader.Schema.GetDataFields()[0])!;
         Assert.Equal((false, true, 1L), ((bool)st.MinValue!, (bool)st.MaxValue!, st.NullCount!.Value));
     }
+
+    [Fact]
+    public async Task Text_written_as_chars_gets_bounds() {
+        var s = new RawDataField("s", Meta.Type.BYTE_ARRAY, true, new LogicalType { STRING = new StringType() }, ConvertedType.UTF8);
+        var ms = new MemoryStream();
+        await using(ParquetWriter w = await ParquetWriter.CreateAsync(new ParquetSchema(s), ms,
+            new ParquetOptions { ColumnEncodingHints = { ["s"] = EncodingHint.Dictionary } })) {
+            using ParquetRowGroupWriter rg = w.CreateRowGroup();
+            await rg.WriteAllPartsAsync<ReadOnlyMemory<char>>(s, new[] { "s0".AsMemory(), "\U0001F600 emoji".AsMemory() }, new[] { 1, 0, 1 }, null, default);
+        }
+        ms.Position = 0;
+        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
+        DataColumnStatistics st = reader.OpenRowGroupReader(0).GetStatistics(reader.Schema.GetDataFields()[0])!;
+        Assert.Equal(("s0", "\U0001F600 emoji", 1L), ((string)st.MinValue!, (string)st.MaxValue!, st.NullCount!.Value));
+    }
 }

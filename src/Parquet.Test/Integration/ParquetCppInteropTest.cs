@@ -163,4 +163,23 @@ public class ParquetCppInteropTest : IDisposable {
         DataColumnStatistics u = rg.GetStatistics(fields[3])!;
         Assert.Equal((G1, G2), ((Guid)u.MinValue!, (Guid)u.MaxValue!));
     }
+
+    [Fact]
+    public async Task Parquet_cpp_uses_string_and_binary_bounds_written_here() {
+        var s = new DataField<string>("s");
+        var b = new DataField<byte[]>("b");
+        string path = Path.Combine(_dir, "bounds.parquet");
+        await using(FileStream fs = System.IO.File.Create(path))
+        await using(ParquetWriter w = await ParquetWriter.CreateAsync(new ParquetSchema(s, b), fs)) {
+            using ParquetRowGroupWriter rg = w.CreateRowGroup();
+            await rg.WriteAsync(s, new[] { "b", "a", null });
+            await rg.WriteAsync(b, new byte[]?[] { new byte[] { 2 }, new byte[] { 1 }, null });
+        }
+        using var file = new PS.ParquetFileReader(path);
+        using PS.RowGroupReader rg2 = file.RowGroup(0);
+        foreach(int column in new[] { 0, 1 }) {
+            using PS.Statistics stats = rg2.MetaData.GetColumnChunkMetaData(column).Statistics!;
+            Assert.True(stats.HasMinMax, $"column {column}");
+        }
+    }
 }
