@@ -237,7 +237,7 @@ to get accepted and they build trust for the larger features.
 
 ## 20. Modular encryption
 
-- **Commits:** `344675a` minus unit 6, plus the `ColumnOrders`… no other dependency. Fixtures in `data/encryption/`.
+- **Commits:** `344675a` without the unit 6 lines (propose unit 6 first). Fixtures in `data/encryption/`.
 - **Change:** AES_GCM_V1 and AES_GCM_CTR_V1; encrypted (`PARE`) or signed plaintext footers; footer key for all
   columns or separate column keys; key metadata and a key retriever; AAD prefixes stored or supplied. BCL crypto only.
 - **Verified:** interop both ways with parquet-cpp in all five modes (fixtures written by ParquetSharp read here;
