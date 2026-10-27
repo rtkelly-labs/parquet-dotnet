@@ -208,8 +208,29 @@ public class DataField : Field, ICloneable {
     internal bool IsCompatibleWith(Type structType) {
         return structType == ClrType ||
             (structType == typeof(ReadOnlyMemory<char>) && ClrType == typeof(string)) ||
-            (structType == typeof(ReadOnlyMemory<byte>) && ClrType == typeof(byte[]));
+            (structType == typeof(ReadOnlyMemory<byte>) && ClrType == typeof(byte[])) ||
+            structType == PhysicalClrType;
     }
+
+    /// <summary>
+    /// The CLR type of this column's physical Parquet type: <see cref="bool"/> (BOOLEAN), <see cref="int"/> (INT32),
+    /// <see cref="long"/> (INT64), <see cref="float"/>, <see cref="double"/>, or <see cref="ReadOnlyMemory{T}"/> of
+    /// bytes (BYTE_ARRAY, FIXED_LEN_BYTE_ARRAY); null for INT96. Low-level reads and writes
+    /// (<see cref="ParquetRowGroupReader.ReadRawAsync{T}"/>, <see cref="ParquetRowGroupWriter.WriteAsync{T}(DataField, ReadOnlyMemory{T}, ReadOnlyMemory{int}?, Dictionary{string, string}?, System.Threading.CancellationToken)"/>)
+    /// accept it as well as <see cref="ClrType"/>, and then move stored values as they are, without the logical
+    /// conversion: timestamps and times as their <c>long</c>/<c>int</c> units (nanoseconds intact), dates as days,
+    /// decimals as unscaled integers or big-endian bytes, unsigned integers as their signed bit patterns. The
+    /// column's logical annotation is written as usual.
+    /// </summary>
+    public Type? PhysicalClrType => (SchemaElement ?? SchemaEncoder.Encode(this, new ParquetOptions())).Type switch {
+        Meta.Type.BOOLEAN => typeof(bool),
+        Meta.Type.INT32 => typeof(int),
+        Meta.Type.INT64 => typeof(long),
+        Meta.Type.FLOAT => typeof(float),
+        Meta.Type.DOUBLE => typeof(double),
+        Meta.Type.BYTE_ARRAY or Meta.Type.FIXED_LEN_BYTE_ARRAY => typeof(ReadOnlyMemory<byte>),
+        _ => null
+    };
 
     /// <summary>
     /// Simple memberwise clone
