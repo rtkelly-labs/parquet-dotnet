@@ -1017,23 +1017,26 @@ static class ParquetPlainEncoder {
         int read = 0;
         int sourceOffset = 0;
 
+        // The page buffer is reused once decoded, so the values are copied: into one array per page, of which each
+        // value is a slice (rather than an array per value).
+        byte[] copy = source.ToArray();
         if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY) {
             if(tse.TypeLength == null)
                 throw new InvalidDataException($"type length must be set for {nameof(TType.FIXED_LEN_BYTE_ARRAY)}");
             int length = tse.TypeLength.Value;
             while(read < data.Length) {
-                ReadOnlyMemory<byte> el = source.Slice(sourceOffset, length).ToArray();
+                if(sourceOffset + length > copy.Length)
+                    throw new InvalidDataException("FIXED_LEN_BYTE_ARRAY page is shorter than its values");
+                data[read++] = new ReadOnlyMemory<byte>(copy, sourceOffset, length);
                 sourceOffset += length;
-                data[read++] = el;
             }
         } else {
             while(read < data.Length) {
                 int length = source.ReadInt32(sourceOffset);
                 sourceOffset += sizeof(int);
                 if(length > 0) {
-                    ReadOnlyMemory<byte> el = source.Slice(sourceOffset, length).ToArray();
+                    data[read++] = new ReadOnlyMemory<byte>(copy, sourceOffset, length);
                     sourceOffset += length;
-                    data[read++] = el;
                 } else {
                     data[read++] = ReadOnlyMemory<byte>.Empty;
                 }
@@ -1414,14 +1417,17 @@ static class ParquetPlainEncoder {
 
         } else {
 
+            // One char array per page (UTF-8 never decodes to more chars than it has bytes), each value a slice of it,
+            // rather than an array per value.
+            char[] chars = new char[source.Length];
+            int used = 0;
             for(int spanIdx = 0; spanIdx < source.Length && i < data.Length; i++) {
                 int length = source.ReadInt32(spanIdx);
                 spanIdx += sizeof(int);
                 Span<byte> elementSpan = source.Slice(spanIdx, length);
-                char[] charBuffer = new char[System.Text.Encoding.UTF8.GetCharCount(elementSpan)];
-                decoder.GetChars(elementSpan, charBuffer, flush: true);
-                ReadOnlyMemory<char> charMemory = charBuffer.AsMemory();
-                data[i] = charMemory;
+                int count = decoder.GetChars(elementSpan, chars.AsSpan(used), flush: true);
+                data[i] = new ReadOnlyMemory<char>(chars, used, count);
+                used += count;
                 spanIdx += length;
             }
         }
