@@ -110,6 +110,4 @@
         </Compile>
     </ItemGroup>
 
-    <Import Project="Lake.Parquet.targets" />
-
 </Project>

@@ -10,7 +10,7 @@
 # 3. on a new branch sync/upstream-<short sha>, merges the ref (a merge, never a rebase: published history and
 #    submodule pins stay valid);
 # 4. on conflict, lists the files and stops (exit 2) for a person to resolve, then re-run with --continue;
-# 5. records the new base in src/Parquet/Lake.Parquet.targets and commits it;
+# 5. records the new base in docs/lake/upstream-base and commits it (Parquet.SourceGenerator's Lake build reads it);
 # 6. runs the test suite;
 # 7. reports which review units upstream now has (scripts/lake/patch-status.sh).
 #
@@ -19,8 +19,8 @@ set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
-targets=src/Parquet/Lake.Parquet.targets
-upstream_url="$(sed -n 's:.*<LakeUpstreamRepository>\(.*\)</LakeUpstreamRepository>.*:\1:p' "$targets")"
+base_file=docs/lake/upstream-base
+upstream_url="${LAKE_UPSTREAM_URL:-https://github.com/aloneguid/parquet-dotnet}"
 
 ref=""; test=1; cont=0
 for a in "$@"; do
@@ -34,11 +34,10 @@ done
 record_base() {
   local sha="$1" version
   version="$(git show "$sha:docs/release-notes.md" | sed -n 1p | tr -d ' #\r')"
-  sed -i "s:<LakeUpstreamCommit>.*</LakeUpstreamCommit>:<LakeUpstreamCommit>$sha</LakeUpstreamCommit>:" "$targets"
-  sed -i "s:<LakeUpstreamVersion>.*</LakeUpstreamVersion>:<LakeUpstreamVersion>$version</LakeUpstreamVersion>:" "$targets"
-  if ! git diff --quiet -- "$targets"; then
-    git add "$targets"
-    git commit -q -m "Lake.Parquet: based on Parquet.Net $version (${sha:0:7})"
+  echo "$sha" > "$base_file"
+  if ! git diff --quiet -- "$base_file"; then
+    git add "$base_file"
+    git commit -q -m "Upstream base: Parquet.Net $version (${sha:0:7})"
   fi
   echo "base: Parquet.Net $version ($sha)"
 }

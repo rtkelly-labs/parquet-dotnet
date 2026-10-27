@@ -58,9 +58,9 @@ class ThriftFooter {
 
         // Looks like Spark is sensitive about this format. See https://github.com/aloneguid/parquet-dotnet/issues/261
 #if DEBUG
-        _fileMeta.CreatedBy = "Lake.Parquet version LocalDev (build Local)";
+        _fileMeta.CreatedBy = "Parquet.Net version LocalDev (build Local)";
 #else
-        _fileMeta.CreatedBy = $"Lake.Parquet version {Globals.Version} (build {Globals.GithubSha})";
+        _fileMeta.CreatedBy = $"Parquet.Net version {Globals.Version} (build {Globals.GithubSha})";
 #endif
         _tree = new ThriftSchemaTree(_fileMeta.Schema);
     }
