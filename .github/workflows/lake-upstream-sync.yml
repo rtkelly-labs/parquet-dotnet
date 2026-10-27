@@ -1,0 +1,66 @@
+name: "Lake.Parquet: upstream sync"
+
+# Weekly, and on demand: merge new upstream Parquet.Net commits into a sync/upstream-<sha> branch and open a pull
+# request for a person to review (scripts/lake/sync-upstream.sh). On a merge conflict, opens an issue instead.
+# Nothing is merged into master automatically.
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Upstream tag or branch (default: upstream/master)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyarrow pandas
+      - name: Merge upstream
+        id: sync
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set +e
+          scripts/lake/sync-upstream.sh ${{ inputs.ref }} > sync.log 2>&1
+          code=$?
+          set -e
+          cat sync.log
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "branch=$(git branch --show-current)" >> "$GITHUB_OUTPUT"
+          if [ $code -ne 0 ] && [ $code -ne 2 ]; then exit $code; fi
+      - name: Open a pull request
+        if: steps.sync.outputs.code == '0' && startsWith(steps.sync.outputs.branch, 'sync/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git push -u origin "${{ steps.sync.outputs.branch }}"
+          { echo "Merges upstream Parquet.Net into Lake.Parquet. Tests passed on Linux in the sync job; the Lake.Parquet workflow runs them on every OS."; echo; echo '```'; tail -n 60 sync.log; echo '```'; } > body.md
+          gh pr create --base master --head "${{ steps.sync.outputs.branch }}" --title "Sync with upstream Parquet.Net (${{ steps.sync.outputs.branch }})" --body-file body.md
+      - name: Report a conflict
+        if: steps.sync.outputs.code == '2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "Merging upstream Parquet.Net hit conflicts. Run \`scripts/lake/sync-upstream.sh\` locally, resolve (docs/lake/maintaining.md), then \`--continue\`."; echo; echo '```'; cat sync.log; echo '```'; } > body.md
+          gh issue create --title "Upstream sync needs a person: merge conflicts" --body-file body.md

@@ -1,0 +1,110 @@
+name: "Lake.Parquet"
+
+# Lake.Parquet's own build and release. Upstream's build.yml stays as upstream has it (so upstream updates merge
+# cleanly) and is not used to release: disable it in the repository's Actions settings (docs/lake/maintaining.md).
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish Lake.Parquet to NuGet and create a GitHub release"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pyarrow for the Arrow interop test
+        run: pip install pyarrow pandas
+      - run: dotnet test src/Parquet.Test -c Release
+
+  series:
+    name: Upstream patch series
+    runs-on: ubuntu-latest
+    # a report, not a gate: upstream changing the same code only means a patch needs refreshing
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Which review units upstream has, and whether the rest still apply
+        run: |
+          git remote add upstream "$(sed -n 's:.*<LakeUpstreamRepository>\(.*\)</LakeUpstreamRepository>.*:\1:p' src/Parquet/Lake.Parquet.targets).git"
+          git fetch --quiet upstream master
+          scripts/lake/patch-status.sh upstream/master | tee -a "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Version from docs/lake/release-notes.md
+        run: |
+          VERSION=$(head -n 1 docs/lake/release-notes.md | tr -d ' #\r')
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VERSION_NO_SUFFIX=${VERSION%%-*}" >> "$GITHUB_ENV"
+          echo "VERSION_MAJOR=${VERSION%%.*}.0.0" >> "$GITHUB_ENV"
+      - name: Build (packs on build)
+        run: |
+          envsubst < src/Parquet/Globals.cs > g.tmp && mv g.tmp src/Parquet/Globals.cs
+          dotnet build src/Parquet/Parquet.csproj -c Release /p:Version=$VERSION /p:FileVersion=$VERSION_NO_SUFFIX.0 /p:AssemblyVersion=$VERSION_MAJOR.0
+      - name: Collect
+        run: |
+          mkdir artifacts
+          cp src/Parquet/bin/Release/Lake.Parquet.*nupkg artifacts/
+          awk 'NR>1 && /^# /{exit} {print}' docs/lake/release-notes.md | tail -n +2 > artifacts/release-notes.md
+          echo "$VERSION" > artifacts/version.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lake-parquet
+          path: artifacts/*
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    if: github.ref == 'refs/heads/master' && github.event_name == 'workflow_dispatch' && inputs.publish_release
+    environment:
+      name: lake-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lake-parquet
+          path: bin
+      - run: echo "VERSION=$(cat bin/version.txt)" >> "$GITHUB_ENV"
+      - name: Publish to NuGet
+        run: dotnet nuget push "bin/Lake.Parquet.*.nupkg" --api-key "${{ secrets.LAKE_NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: lake-v${{ env.VERSION }}
+          name: Lake.Parquet ${{ env.VERSION }}
+          prerelease: ${{ contains(env.VERSION, '-') }}
+          files: bin/*.nupkg
+          body_path: bin/release-notes.md
