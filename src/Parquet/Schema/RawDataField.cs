@@ -18,7 +18,7 @@ public sealed class RawDataField : DataField {
     /// </summary>
     public RawDataField(string name, Meta.Type physicalType, bool isNullable,
         LogicalType? logicalType = null, ConvertedType? convertedType = null, int? typeLength = null)
-        : base(name, ClrTypeOf(physicalType, logicalType, convertedType), isNullable) {
+        : base(name, ClrTypeOf(physicalType, logicalType, convertedType), isNullable, isArray: false) {
         if(physicalType == Meta.Type.FIXED_LEN_BYTE_ARRAY && typeLength is not > 0)
             throw new ArgumentException("FIXED_LEN_BYTE_ARRAY needs a type length", nameof(typeLength));
         PhysicalType = physicalType;

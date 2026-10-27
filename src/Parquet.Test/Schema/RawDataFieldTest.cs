@@ -158,4 +158,21 @@ public class RawDataFieldTest {
         Assert.Equal(new[] { 1, 0, 1 }, defs);
         Assert.Equal(new[] { "x", "y" }, keys.Take(2).Select(k => k.ToString()));
     }
+
+    [Fact]
+    public async Task Byte_array_columns_are_not_repeated() {
+        var b = new RawDataField("b", Meta.Type.BYTE_ARRAY, true);
+        var f = new RawDataField("f", Meta.Type.FIXED_LEN_BYTE_ARRAY, false, typeLength: 2);
+        Assert.False(b.IsArray);
+        var ms = new MemoryStream();
+        await using(ParquetWriter w = await ParquetWriter.CreateAsync(new ParquetSchema(f, b), ms)) {
+            using ParquetRowGroupWriter rg = w.CreateRowGroup();
+            await rg.WriteAllPartsAsync<ReadOnlyMemory<byte>>(f, new ReadOnlyMemory<byte>[] { new byte[] { 1, 2 }, new byte[] { 3, 4 } }, null, null, default);
+            await rg.WriteAllPartsAsync<ReadOnlyMemory<byte>>(b, new ReadOnlyMemory<byte>[] { new byte[] { 5 } }, new[] { 0, 1 }, null, default);
+        }
+        ms.Position = 0;
+        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
+        Assert.Equal(2, reader.RowGroups[0].RowCount);
+        Assert.Equal(FieldRepetitionType.OPTIONAL, reader.Metadata!.Schema[2].RepetitionType);
+    }
 }
