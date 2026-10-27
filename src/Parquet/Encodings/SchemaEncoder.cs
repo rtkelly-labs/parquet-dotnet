@@ -73,12 +73,18 @@ static class SchemaEncoder {
         }
 
         // Rule 2. If the repeated field is a group with multiple fields, then its type is the element type and elements are required.
-        // todo: not implemented
-
         // Rule 3. If the repeated field is a group with one field and is named either "array" or uses
         // the "LIST"-annotated group's name with "_tuple" appended then the repeated type is the element
         // type and elements are required.
-        // todo: not implemented fully, only "array"
+        // The element is then a required struct: the repeated group itself (see TryBuildStruct).
+        if(midGroup.NumChildren > 1 || midGroup.Name == "array" || midGroup.Name == outerGroup.Name + "_tuple") {
+            field.Path = new FieldPath(outerGroup.Name);
+            field.SchemaElement = outerGroup;
+            field.GroupSchemaElement = midGroup;    // the list repeats at this group
+            index += 1; //only skip this element
+            ownedChildren = 1;  // next element (the repeated group) is list's item
+            return true;
+        }
 
         // Normal "modern" LIST:
         // as we are skipping elements set path hint
@@ -137,7 +143,8 @@ static class SchemaEncoder {
         index++;
         ownedChildren = container.NumChildren ?? 0; //make them owned to receive in .Assign()
         field = StructField.CreateWithNoElements(container.Name);
-        field.IsNullable = container.RepetitionType != FieldRepetitionType.REQUIRED;
+        // a repeated group here is a legacy list's element (rules 2 and 3 in TryBuildList), which is required
+        field.IsNullable = container.RepetitionType == FieldRepetitionType.OPTIONAL;
         field.SchemaElement = container;
         return true;
     }

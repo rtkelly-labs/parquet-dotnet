@@ -360,8 +360,40 @@ public static class ParquetSerializer {
         await DeserializeRowGroupAsync(rg, reader.Schema, asm, result, options, progress, cancellationToken);
     }
 
-    private static DataField? MakeForReading(ParquetSchema fileSchema, DataField assemblerField, ParquetOptions? options) {
+    /// <summary>
+    /// Each data field's path made of field names only: list elements and map keys and values are marked by position,
+    /// whatever their groups are called in the file.
+    /// </summary>
+    private static Dictionary<DataField, string> LogicalPaths(ParquetSchema schema) {
+        var result = new Dictionary<DataField, string>(ReferenceEqualityComparer.Instance);
+        void Walk(Field f, string path) {
+            switch(f) {
+                case DataField df:
+                    result[df] = path;
+                    break;
+                case ListField lf:
+                    Walk(lf.Item, path + "/[]");
+                    break;
+                case MapField mf:
+                    Walk(mf.Key, path + "/{key}");
+                    Walk(mf.Value, path + "/{value}");
+                    break;
+                case StructField sf:
+                    foreach(Field c in sf.Fields)
+                        Walk(c, path + "/" + c.Name);
+                    break;
+            }
+        }
+        foreach(Field f in schema.Fields)
+            Walk(f, f.Name);
+        return result;
+    }
+
+    private static DataField? MakeForReading(ParquetSchema fileSchema, ParquetSchema classSchema, DataField assemblerField, ParquetOptions? options) {
         DataField? fileField;
+        StringComparison comparison = options != null && options.PropertyNameCaseInsensitive
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
 
         if(options != null && options.PropertyNameCaseInsensitive) {
             // case-insensitive search
@@ -369,6 +401,13 @@ public static class ParquetSerializer {
             fileField = fileSchema.DataFields.FirstOrDefault(f => f.Path.ToString().Equals(path, StringComparison.OrdinalIgnoreCase));
         } else {
             fileField = fileSchema.DataFields.FirstOrDefault(f => f.Path.Equals(assemblerField.Path));
+        }
+
+        // Lists and maps whose container and element groups are named differently from the class schema's
+        // ("array", "bag", "<name>_tuple", "key_value" and so on, from other writers): match by field names only.
+        if(fileField == null && LogicalPaths(classSchema).TryGetValue(assemblerField, out string? logical)) {
+            fileField = LogicalPaths(fileSchema)
+                .FirstOrDefault(p => p.Value.Equals(logical, comparison)).Key;
         }
 
         if(fileField == null)
@@ -423,7 +462,7 @@ public static class ParquetSerializer {
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            DataField? readerField = MakeForReading(schema, fasm.Field, options);
+            DataField? readerField = MakeForReading(schema, asm.Schema, fasm.Field, options);
 
             // skips column deserialisation if it doesn't exist in file's schema
             if(readerField == null)
