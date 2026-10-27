@@ -126,4 +126,36 @@ public class RawDataFieldTest {
         Assert.True(double.IsNegative((double)st.MinValue!) && (double)st.MinValue! == 0);
         Assert.True(!double.IsNegative((double)st.MaxValue!) && (double)st.MaxValue! == 0);
     }
+
+    [Fact]
+    public async Task Text_columns_take_strings_and_maps_keep_their_repetition() {
+        var name = new RawDataField("name", Meta.Type.BYTE_ARRAY, true, new LogicalType { STRING = new StringType() }, ConvertedType.UTF8);
+        var key = new RawDataField("key", Meta.Type.BYTE_ARRAY, false, new LogicalType { STRING = new StringType() }, ConvertedType.UTF8);
+        var value = new RawDataField("value", Meta.Type.INT64, true);
+        var map = new MapField("m", key, value, isNullable: false);
+        var ms = new MemoryStream();
+        await using(ParquetWriter w = await ParquetWriter.CreateAsync(new ParquetSchema(name, map), ms,
+            new ParquetOptions { ColumnEncodingHints = { ["name"] = EncodingHint.Dictionary } })) {
+            using ParquetRowGroupWriter rg = w.CreateRowGroup();
+            await rg.WriteAsync(name, new[] { "a", null, "a" });
+            // rows: {x: 1}, {}, {y: null}
+            await rg.WriteAllPartsAsync<ReadOnlyMemory<char>>(key, new[] { "x".AsMemory(), "y".AsMemory() }, new[] { 1, 0, 1 }, new[] { 0, 0, 0 }, default);
+            await rg.WriteAllPartsAsync<long>(value, new[] { 1L }, new[] { 2, 0, 1 }, new[] { 0, 0, 0 }, default);
+        }
+        ms.Position = 0;
+        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
+        Assert.Equal(FieldRepetitionType.REQUIRED, reader.Metadata!.Schema[2].RepetitionType);
+        var encodings = reader.Metadata.RowGroups[0].Columns[0].MetaData!.Encodings;
+        Assert.True(encodings.Contains(Meta.Encoding.PLAIN_DICTIONARY) || encodings.Contains(Meta.Encoding.RLE_DICTIONARY));   // strings dictionary-encoded
+        DataField[] fields = reader.Schema.GetDataFields();
+        Assert.Equal((1, 1), (fields[1].MaxDefinitionLevel, fields[1].MaxRepetitionLevel));
+        Assert.Equal((2, 1), (fields[2].MaxDefinitionLevel, fields[2].MaxRepetitionLevel));
+        using ParquetRowGroupReader rg2 = reader.OpenRowGroupReader(0);
+        var keys = new ReadOnlyMemory<char>[3];
+        var defs = new int[3];
+        var reps = new int[3];
+        await rg2.ReadRawAsync<ReadOnlyMemory<char>>(fields[1], keys, defs, reps);
+        Assert.Equal(new[] { 1, 0, 1 }, defs);
+        Assert.Equal(new[] { "x", "y" }, keys.Take(2).Select(k => k.ToString()));
+    }
 }

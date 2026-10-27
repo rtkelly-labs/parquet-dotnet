@@ -8,7 +8,7 @@ namespace Parquet.Schema;
 /// A column declared exactly as stored: its physical type and the annotations to write with it (logical type,
 /// converted type, length, precision and scale), with no mapping from a CLR type. Values are read and written as the
 /// physical type (<see cref="DataField.PhysicalClrType"/>): <c>bool</c>, <c>int</c>, <c>long</c>, <c>float</c>,
-/// <c>double</c>, or bytes. For table formats (Iceberg, DuckLake) whose schemas say exactly how each column is stored.
+/// <c>double</c>, or bytes; text columns (STRING, ENUM, JSON) also as strings. For table formats (Iceberg, DuckLake) whose schemas say exactly how each column is stored.
 /// </summary>
 public sealed class RawDataField : DataField {
 
@@ -18,7 +18,7 @@ public sealed class RawDataField : DataField {
     /// </summary>
     public RawDataField(string name, Meta.Type physicalType, bool isNullable,
         LogicalType? logicalType = null, ConvertedType? convertedType = null, int? typeLength = null)
-        : base(name, ClrTypeOf(physicalType), isNullable) {
+        : base(name, ClrTypeOf(physicalType, logicalType, convertedType), isNullable) {
         if(physicalType == Meta.Type.FIXED_LEN_BYTE_ARRAY && typeLength is not > 0)
             throw new ArgumentException("FIXED_LEN_BYTE_ARRAY needs a type length", nameof(typeLength));
         PhysicalType = physicalType;
@@ -37,7 +37,10 @@ public sealed class RawDataField : DataField {
     /// <summary>The legacy converted type written with the column, if any.</summary>
     public ConvertedType? ConvertedType { get; }
 
-    private static Type ClrTypeOf(Meta.Type physicalType) => physicalType switch {
+    private static Type ClrTypeOf(Meta.Type physicalType, LogicalType? logical, ConvertedType? converted) => physicalType switch {
+        // text: also written from strings (and dictionary-encoded as strings are)
+        Meta.Type.BYTE_ARRAY when logical?.STRING != null || logical?.ENUM != null || logical?.JSON != null
+            || converted is Meta.ConvertedType.UTF8 or Meta.ConvertedType.ENUM or Meta.ConvertedType.JSON => typeof(string),
         Meta.Type.BOOLEAN => typeof(bool),
         Meta.Type.INT32 => typeof(int),
         Meta.Type.INT64 => typeof(long),
