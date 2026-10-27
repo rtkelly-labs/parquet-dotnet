@@ -161,6 +161,7 @@ static class SchemaEncoder {
         if(TryBuildDataField(se, options, out DataField? df)) {
             f = df;
             index++;
+            f!.FieldId = se.FieldId ?? -1;
             return f;
         }
 
@@ -172,6 +173,9 @@ static class SchemaEncoder {
             f = sf;
         }
 
+        // A group's field_id is on its outer element (the LIST/MAP-annotated group, or the struct group).
+        if(f != null)
+            f.FieldId = se.FieldId ?? -1;
         return f;
     }
 
@@ -384,7 +388,8 @@ static class SchemaEncoder {
             ConvertedType = ConvertedType.LIST,
             LogicalType = new LogicalType { LIST = new ListType() },
             RepetitionType = listField.IsNullable ? FieldRepetitionType.OPTIONAL : FieldRepetitionType.REQUIRED,
-            NumChildren = 1  //field container below
+            NumChildren = 1,  //field container below
+            FieldId = listField.FieldId != -1 ? listField.FieldId : null
         };
         container.Add(root);
 
@@ -408,7 +413,8 @@ static class SchemaEncoder {
             ConvertedType = ConvertedType.MAP,
             LogicalType = new LogicalType { MAP = new MapType() },
             NumChildren = 1,
-            RepetitionType = FieldRepetitionType.OPTIONAL
+            RepetitionType = FieldRepetitionType.OPTIONAL,
+            FieldId = mapField.FieldId != -1 ? mapField.FieldId : null
         };
         container.Add(root);
 
@@ -436,8 +442,9 @@ static class SchemaEncoder {
     private static void Encode(StructField structField, SchemaElement parent, IList<SchemaElement> container, ParquetOptions options) {
         var tseStruct = new SchemaElement {
             Name = structField.Name,
-            RepetitionType = structField.IsNullable ? FieldRepetitionType.OPTIONAL : FieldRepetitionType.REQUIRED
+            RepetitionType = structField.IsNullable ? FieldRepetitionType.OPTIONAL : FieldRepetitionType.REQUIRED,
             // no logical or converted type annotations for structs
+            FieldId = structField.FieldId != -1 ? structField.FieldId : null
         };
         container.Add(tseStruct);
         parent.NumChildren = (parent.NumChildren ?? 0) + 1;
