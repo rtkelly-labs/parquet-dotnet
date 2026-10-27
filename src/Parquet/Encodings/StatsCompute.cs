@@ -54,6 +54,20 @@ static class StatsCompute {
         stats.MaxValue = max;
     }
 
+    /// <summary>Min/max of booleans (false before true).</summary>
+    public static void Compute(ReadOnlySpan<bool> data, DataColumnStatistics? stats) {
+        if(stats == null)
+            return;
+        if(data.IsEmpty) {
+            stats.MinValue = stats.MaxValue = null;
+            return;
+        }
+        bool min = data.IndexOf(false) < 0;     // all true: min is true
+        bool max = data.IndexOf(true) >= 0;
+        stats.MinValue = min;
+        stats.MaxValue = max;
+    }
+
     /// <summary>Min/max of INT32 values annotated unsigned, compared as unsigned and kept as their bits.</summary>
     public static void ComputeUnsigned(ReadOnlySpan<int> data, DataColumnStatistics? stats) {
         if(stats == null)

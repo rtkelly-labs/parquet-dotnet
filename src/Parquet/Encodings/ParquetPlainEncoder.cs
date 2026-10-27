@@ -43,7 +43,7 @@ static class ParquetPlainEncoder {
         if(t == typeof(bool)) {
             ReadOnlySpan<bool> span = sourceSpan.AsSpan<T, bool>();
             Encode(span, destination);
-            // no stats for bools
+            StatsCompute.Compute(span, stats);
         } else if(t == typeof(byte)) {
             ReadOnlySpan<byte> span = sourceSpan.AsSpan<T, byte>();
             Encode(span, destination, tse);
@@ -242,7 +242,7 @@ static class ParquetPlainEncoder {
 
         System.Type t = value.GetType();
         if(t == typeof(bool)) {
-            result = null;
+            result = new[] { (bool)value ? (byte)1 : (byte)0 };    // PLAIN boolean, as one byte
             return true;
         } else if(t == typeof(byte)) {
             result = BitConverter.GetBytes((int)(byte)value);

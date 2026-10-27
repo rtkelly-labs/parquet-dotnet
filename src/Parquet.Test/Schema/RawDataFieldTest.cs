@@ -175,4 +175,18 @@ public class RawDataFieldTest {
         Assert.Equal(2, reader.RowGroups[0].RowCount);
         Assert.Equal(FieldRepetitionType.OPTIONAL, reader.Metadata!.Schema[2].RepetitionType);
     }
+
+    [Fact]
+    public async Task Boolean_columns_get_bounds() {
+        var b = new DataField<bool?>("b");
+        var ms = new MemoryStream();
+        await using(ParquetWriter w = await ParquetWriter.CreateAsync(new ParquetSchema(b), ms)) {
+            using ParquetRowGroupWriter rg = w.CreateRowGroup();
+            await rg.WriteAsync<bool>(b, new bool?[] { true, null, false });
+        }
+        ms.Position = 0;
+        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
+        DataColumnStatistics st = reader.OpenRowGroupReader(0).GetStatistics(reader.Schema.GetDataFields()[0])!;
+        Assert.Equal((false, true, 1L), ((bool)st.MinValue!, (bool)st.MaxValue!, st.NullCount!.Value));
+    }
 }
