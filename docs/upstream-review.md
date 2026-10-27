@@ -1,6 +1,6 @@
 # Fork changes: a review guide for upstreaming
 
-This fork (branch `ccr-87fadcf9-bxi9wr`) diverges from upstream `master` at `658e1ca`. Every change on it was
+This fork, published as **Lake.Parquet** ([lake/README.md](lake/README.md); maintenance in [lake/maintaining.md](lake/maintaining.md)), on branch `ccr-87fadcf9-bxi9wr`, diverges from upstream `master` at `658e1ca`. Every change on it was
 machine-written. Upstream does not accept LLM-written issues, pull requests or comments (`docs/README.md`), so anything
 proposed upstream has to be reviewed, understood and rewritten (or at least re-owned) by a person first. This page
 splits the fork into **review units**: each small enough to check on its own and, once you are satisfied, to propose
