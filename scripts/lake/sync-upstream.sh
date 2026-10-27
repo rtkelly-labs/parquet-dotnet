@@ -10,7 +10,8 @@
 # 3. on a new branch sync/upstream-<short sha>, merges the ref (a merge, never a rebase: published history and
 #    submodule pins stay valid);
 # 4. on conflict, lists the files and stops (exit 2) for a person to resolve, then re-run with --continue;
-# 5. records the new base in docs/lake/upstream-base and commits it (Parquet.SourceGenerator's Lake build reads it);
+# 5. records the new base (commit and version) in docs/lake/upstream-base and commits it; Parquet.SourceGenerator's
+#    Lake build names it in the package;
 # 6. runs the test suite;
 # 7. reports which review units upstream now has (scripts/lake/patch-status.sh).
 #
@@ -34,7 +35,7 @@ done
 record_base() {
   local sha="$1" version
   version="$(git show "$sha:docs/release-notes.md" | sed -n 1p | tr -d ' #\r')"
-  echo "$sha" > "$base_file"
+  echo "$sha $version" > "$base_file"   # commit and Parquet.Net version, read by the Lake.Parquet build
   if ! git diff --quiet -- "$base_file"; then
     git add "$base_file"
     git commit -q -m "Upstream base: Parquet.Net $version (${sha:0:7})"

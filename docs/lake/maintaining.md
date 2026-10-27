@@ -52,7 +52,7 @@ scripts/lake/sync-upstream.sh 6.2.0      # an upstream release tag
 scripts/lake/sync-upstream.sh --continue
 ```
 
-The script merges, writes the upstream commit to `docs/lake/upstream-base` (Lake.Parquet's package metadata and
+The script merges, writes the upstream commit and version to `docs/lake/upstream-base` (Lake.Parquet's package metadata and
 release notes name it), runs the test suite and prints the patch report. Always let it run the tests after
 resolving a conflict (`--no-test` is for trying things out): a resolution that compiles can still be wrong.
 
