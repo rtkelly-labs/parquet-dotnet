@@ -203,9 +203,10 @@ class DefaultCompressor : ICompressor {
     private static ZstdSharp.Decompressor? _zstdDecompressor;
 
     private async ValueTask<IMemoryOwner<byte>> ZstdDecompress(Stream source, int destinationLength) {
-        ZstdSharp.Decompressor decompressor = _zstdDecompressor ??= new ZstdSharp.Decompressor();
         using MemoryOwner<byte> compressed = MemoryOwner<byte>.Allocate((int)(source.Length - source.Position));
         await source.ReadExactlyAsync(compressed.Memory);
+        // taken after the await: the continuation may run on another thread, whose decompressor this one must not share
+        ZstdSharp.Decompressor decompressor = _zstdDecompressor ??= new ZstdSharp.Decompressor();
         // Do not trust destinationLength — some Parquet files report an incorrect UncompressedPageSize in their
         // metadata. The content size in the Zstd frame header is accurate: decompress straight into a buffer of
         // that size, falling back to letting ZstdSharp size the output when the header has none.

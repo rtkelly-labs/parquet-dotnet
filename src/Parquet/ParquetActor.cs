@@ -29,12 +29,15 @@ public class ParquetActor {
     /// </summary>
     /// <returns></returns>
     /// <exception cref="IOException"></exception>
-    protected async Task ValidateFileAsync() {
-        _fileStream.Seek(0, SeekOrigin.Begin);
-        byte[] head = await _fileStream.ReadBytesExactlyAsync(4);
-
+    protected async Task ValidateFileAsync(bool checkHead = true) {
         _fileStream.Seek(-4, SeekOrigin.End);
         byte[] tail = await _fileStream.ReadBytesExactlyAsync(4);
+
+        byte[] head = tail;     // the tail's magic says whether the footer is encrypted; the head must match it
+        if(checkHead) {
+            _fileStream.Seek(0, SeekOrigin.Begin);
+            head = await _fileStream.ReadBytesExactlyAsync(4);
+        }
 
         bool plain = MagicBytes.SequenceEqual(head) && MagicBytes.SequenceEqual(tail);
         bool encrypted = EncryptedMagicBytes.SequenceEqual(head) && EncryptedMagicBytes.SequenceEqual(tail);

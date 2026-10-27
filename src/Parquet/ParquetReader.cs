@@ -37,7 +37,7 @@ public class ParquetReader : ParquetActor, IAsyncDisposable {
     }
 
     private async Task InitialiseAsync(CancellationToken cancellationToken) {
-        await ValidateFileAsync();
+        await ValidateFileAsync(_parquetOptions.ValidateHeaderMagic);
 
         //read metadata instantly, now
         _meta = await ReadMetadataAsync(cancellationToken, _parquetOptions.Decryption);

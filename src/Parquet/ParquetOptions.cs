@@ -98,6 +98,12 @@ public class ParquetOptions {
     public bool WriteStatistics { get; set; } = true;
 
     /// <summary>
+    /// Check the magic bytes at the start of a file as well as at its end (default). Readers over ranged storage turn
+    /// this off to save a request for the first four bytes; the footer and its trailing magic are always checked.
+    /// </summary>
+    public bool ValidateHeaderMagic { get; set; } = true;
+
+    /// <summary>
     /// Write files with Parquet modular encryption (AES-GCM) using these keys. Not supported when appending.
     /// </summary>
     public Encryption.ParquetEncryptionOptions? Encryption { get; set; }
