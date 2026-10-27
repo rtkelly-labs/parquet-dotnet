@@ -12,12 +12,15 @@ an earlier fork commit. The **Commits** line of each unit says which parts of wh
 
 ## How to review a unit
 
+Units 1 to 10c also exist as **verified patches** against upstream `master` (`658e1ca`), in [`upstream/`](upstream/):
+see [Verified patches](#verified-patches) below. Start from those rather than from the fork's commits.
+
 1. Read the problem statement and reproduce it on upstream `master` (`git checkout 658e1ca`): the unit's test, or the
    repro given, should fail there. A unit whose problem you cannot reproduce should not go upstream.
 2. Read the diff: `git diff 658e1ca ccr-87fadcf9-bxi9wr -- <files>` shows the fork's final state of the unit's files,
    which may include other units' changes in the same file. `git show <commit> -- <files>` shows one commit's part.
 3. Check the points under **Review** (the places I am least sure of, or that are judgement calls for upstream).
-4. Run the fork suite: `dotnet test src/Parquet.Test` (768 passed, 3 skipped on each of net8.0 and net10.0 at the branch
+4. Run the fork suite: `dotnet test src/Parquet.Test` (772 passed, 3 skipped on each of net8.0 and net10.0 at the branch
    head on Linux, with `pyarrow` installed for one Arrow interop test).
 
 What has **not** been verified, for every unit:
@@ -44,7 +47,8 @@ to get accepted and they build trust for the larger features.
 | 5 | `DATA_PAGE_V2` with repetition levels | bug | small | |
 | 6 | `dictionary_page_offset` never written | bug | tiny | |
 | 7 | UUID statistics byte order and ordering | bug | small | |
-| 8 | Statistics in each type's sort order | bug | medium | (7) |
+| 8 | Statistics in each type's sort order (with 2) | bug | medium | (7) |
+| 8b | `BYTE_STREAM_SPLIT` columns get no statistics | bug | tiny | |
 | 9 | Statistics decoded as the column's type | bug | small | |
 | 10 | Zstd decompression without double copies | perf | small | |
 | 10b | Byte-array and text values: one array per page | perf | small | |
@@ -129,6 +133,8 @@ to get accepted and they build trust for the larger features.
   (`StatsCompute.Compute(ReadOnlySpan<Guid>…)` compares big-endian bytes).
 - **Problem:** UUID bounds were written in .NET's mixed-endian `Guid` layout while the values use RFC 4122 big-endian
   bytes, and min/max were chosen with `Guid.CompareTo`, which is not byte order either.
+- **Change:** bounds written and chosen in big-endian byte order, and read back (`TryDecode`, UUID part of `35bd5c1`)
+  as the `Guid`s they are, so a round trip gives the values written.
 - **Review:** `UuidStatisticsTest` and `RawDataFieldTest.Strings_compare_by_code_point_and_uuids_by_their_bytes`.
 
 ## 8. Statistics in each type's sort order
@@ -142,15 +148,30 @@ to get accepted and they build trust for the larger features.
 - **Change:** unsigned comparison where the annotation says unsigned; a code-point comparison for strings;
   NaN skipped and zeros signed for floats; byte-wise bounds for byte arrays that sort unsigned (none for byte-array
   decimals and INTERVAL, none above 4 KB as parquet-cpp); `false`/`true` for booleans.
+- **Also (`a28da59`), required once `column_orders` says TYPE_ORDER (unit 2):** `nan_count` on every floating point
+  column, even when zero (parquet.thrift: "The nan_count field must be set for floating point types"); the
+  deprecated `min`/`max`, which their readers compare signed, written only for columns whose order is signed, as
+  parquet-cpp does (strings, byte arrays and unsigned integers get `min_value`/`max_value` only).
 - **Review:** the 4 KB cut-off drops bounds rather than truncating them (parquet-cpp truncates with a rounded-up max);
   truncation would keep pruning for long values. `CompareCodePoints` is the classic UTF-16 fix-up; check it.
+
+## 8b. `BYTE_STREAM_SPLIT` columns get no statistics
+
+- **Commits:** part of `a28da59` (`DataColumnWriter.cs`, one line).
+- **Problem:** a column written with `EncodingHint.ByteSplitStream` gets no min/max at all: that branch never computes
+  statistics, so engines cannot prune on it.
+- **Change:** the plain encoder (which computes them) also runs into `Stream.Null`; writes there are no-ops, so the
+  added cost is the min/max pass.
+- **Review:** a dedicated statistics entry point (without the encoder dispatch) would be cleaner; this is the minimal
+  version.
 
 ## 9. Statistics decoded as the column's type
 
 - **Commits:** part of `35bd5c1` (`ParquetPlainEncoder.TryDecode`).
 - **Problem:** `DataColumnStatistics.MinValue/MaxValue` of decimals stored as INT32/INT64 came back as raw unscaled
   integers (the decimal branch was unreachable after the INT32/INT64 branches), unsigned ints as their signed bits
-  (a `uint64` max of 2^64−1 as −1), UUIDs (FLBA) as nothing.
+  (a `uint64` max of 2^64−1 as −1), UUIDs (FLBA) as nothing. The UUID part moved to unit 7's patch, since it
+  only round-trips with unit 7's byte order.
 - **Review — behaviour change:** callers that worked around the old types (e.g. divided by the scale themselves) will
   see different values. Upstream may want this called out in release notes.
 
@@ -160,7 +181,10 @@ to get accepted and they build trust for the larger features.
   per-thread decompressor was taken before an `await`, so concurrent reads could share one; it showed up as "Data
   corruption detected" in parallel ranged reads). **Never propose `cbcc43d` without the fix.**
 - **Problem:** decompression copied the compressed page into a new array, let ZstdSharp allocate the output, then
-  copied that again. 2M rows: read 399 → ~180 ms.
+  copied that again.
+- **Measured on its own** (patch on upstream, 1M rows of string + binary + int64 in 4 row groups, best of 7):
+  allocation per Zstd read 208 → 137 MB; time unchanged (252 → 250 ms). The read time gain seen in the fork comes
+  from unit 10b. Snappy files are unaffected.
 - **Review:** `ConcurrentZstdTest` is a smoke test only, it did not reproduce the race on the unfixed code. Judge
   whether a `[ThreadStatic]` cache is acceptable upstream at all (simplest alternative: a new `Decompressor` per page,
   keeping the single-copy part). The frame-header size fallback covers frames without a content size.
@@ -171,6 +195,8 @@ to get accepted and they build trust for the larger features.
 - **Problem:** PLAIN decoding of BYTE_ARRAY / FIXED_LEN_BYTE_ARRAY allocated a `byte[]` per value, and text a
   `char[]` per value. Reading 1M UUIDs or strings spent as much time allocating as decoding.
 - **Change:** each page is copied once into one array, and every value is a slice of it.
+- **Measured on its own** (same benchmark as unit 10): read 252 → 119 ms (Zstd) and 241 → 114 ms (Snappy), allocation
+  208 → 170 MB.
 - **Review — trade-off:** a value the caller keeps alive keeps its whole page's array alive (one `ReadOnlyMemory`
   slice pins the page). For callers that keep a few values out of large pages that is more memory than before; upstream
   may prefer it behind an option. The char buffer is sized at one char per byte, which UTF-8 never exceeds.
@@ -181,7 +207,7 @@ to get accepted and they build trust for the larger features.
 - **Problem:** the library targets net8.0 and net10.0 but its tests ran on net10.0 only. One upstream test
   (`BigDecimalTest`) does not compile for net8.0: under C# 14, `bytes.Reverse()` binds to the in-place `Span`
   overload, which returns `void`.
-- **Change:** `Enumerable.Reverse(bytes)`; the test project targets both. Both pass (768 each).
+- **Change:** `Enumerable.Reverse(bytes)`; the test project targets both. Both pass (772 each at the branch head).
 
 ## 11. Field IDs on every field, read back
 
@@ -280,3 +306,37 @@ to get accepted and they build trust for the larger features.
   `792c737`.
 - **Review:** upstream may not want a native test dependency. The alternative is committed fixture files written by
   parquet-cpp (as units 5, 15 and 20 already do) plus pyarrow checks in the existing Python interop tests.
+
+## Verified patches
+
+Each file in [`upstream/`](upstream/) is a plain `git diff` against upstream `master` (`658e1ca`): `git apply` it on a
+clean checkout. For each one, the unit's tests were run **without** the source change (they must fail) and the whole
+suite **with** it (it must pass), on Linux, .NET 10.
+
+| Patch | Unit | Tests failing on upstream | Suite with the patch |
+|---|---|---|---|
+| `01-timestamp-statistics-unit.patch` | 1 | `TimestampStatisticsTest` | pass |
+| `03-required-map-repetition.patch` | 3 | `RequiredMapTest` | pass |
+| `04-nullable-list-elements.patch` | 4 | `NullableListElementTest` | pass |
+| `05-data-page-v2-repetition.patch` | 5 | `DataPageV2Test` (binary fixtures included: apply with `git apply --binary`) | pass |
+| `06-dictionary-page-offset.patch` | 6 | `PageOffsetTest` (new) | pass |
+| `07-uuid-statistics.patch` | 7 | 3 of 3 in `UuidStatisticsTest` | 699 passed |
+| `08-statistics-sort-order-and-column-orders.patch` | 8 + 2 | 8 of 8 in `StatisticsSortOrderTest` | 704 passed |
+| `08b-byte-stream-split-statistics.patch` | 8b | 2 of 2 in `ByteStreamSplitStatisticsTest` | 698 passed |
+| `09-statistics-decoded-as-column-type.patch` | 9 | 7 of 7 in `StatisticsDecodingTest` | 703 passed |
+| `10-zstd-single-copy.patch` | 10 | none: perf (`ConcurrentZstdTest` guards the thread-static cache; passed 5 runs of 5) | 697 passed |
+| `10b-one-array-per-page.patch` | 10b | none: perf (`PageValuesTest` guards against values aliasing reused page buffers) | 697 passed |
+| `10c-tests-on-net8.patch` | 10c | does not compile on net8.0 | pass on net8.0 and net10.0 |
+
+Differences from the fork, so each patch stands alone:
+
+- Tests use ordinary `DataField`s, not `RawDataField` (unit 18) or ParquetSharp (unit 21).
+- Unit 8 adds `ColumnStatisticsRules` with an **internal** `ColumnSortOrder`; unit 16 makes the enum public.
+- Unit 8 leaves out the unsigned INT32/INT64 comparison (`ComputeUnsigned`): upstream cannot write unsigned values
+  as `int`/`long` (that needs unit 14 or 18), so it belongs with those. Its `NanCount` is internal (public in unit 16).
+- The patches overlap in `ParquetPlainEncoder.cs` and `StatsCompute.cs`. Each applies to `master`; after one is merged
+  the next may need a rebase (in the suggested order, expect small conflicts in 7 → 8 → 9).
+
+Not verified: Windows and macOS for the patches themselves (the fork's suite runs on both in Iceberg.NET's CI), and
+units 11 to 21 as standalone patches (feature units: review them from the fork's commits).
+

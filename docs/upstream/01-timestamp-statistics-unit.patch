@@ -1,0 +1,57 @@
+diff --git a/src/Parquet.Test/TimestampStatisticsTest.cs b/src/Parquet.Test/TimestampStatisticsTest.cs
+new file mode 100644
+index 0000000..31db201
+--- /dev/null
++++ b/src/Parquet.Test/TimestampStatisticsTest.cs
+@@ -0,0 +1,32 @@
++using System;
++using System.IO;
++using System.Threading.Tasks;
++using Parquet.Schema;
++using Xunit;
++
++namespace Parquet.Test;
++
++/// <summary>
++/// Footer statistics of INT64 timestamps are in the column's own unit. They used to be written in milliseconds whatever
++/// the unit, so readers that prune by statistics (DuckDB, Spark, Arrow) skipped row groups holding matching rows.
++/// </summary>
++public class TimestampStatisticsTest {
++
++    [Theory]
++    [InlineData(DateTimeTimeUnit.Millis, 2_000L)]
++    [InlineData(DateTimeTimeUnit.Micros, 2_000_000L)]
++    [InlineData(DateTimeTimeUnit.Nanos, 2_000_000_000L)]
++    public async Task Statistics_are_in_the_columns_unit(DateTimeTimeUnit unit, long twoSeconds) {
++        var field = new DateTimeDataField("ts", DateTimeFormat.Timestamp, unit: unit, isNullable: false);
++        using var ms = new MemoryStream();
++        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms)) {
++            using ParquetRowGroupWriter rg = writer.CreateRowGroup();
++            await rg.WriteAsync<DateTime>(field, new[] { DateTime.UnixEpoch, DateTime.UnixEpoch.AddSeconds(2) }.AsMemory());
++        }
++        ms.Position = 0;
++        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
++        Meta.Statistics stats = reader.Metadata!.RowGroups[0].Columns[0].MetaData!.Statistics!;
++        Assert.Equal(0L, BitConverter.ToInt64(stats.MinValue!, 0));
++        Assert.Equal(twoSeconds, BitConverter.ToInt64(stats.MaxValue!, 0));
++    }
++}
+diff --git a/src/Parquet/Encodings/ParquetPlainEncoder.cs b/src/Parquet/Encodings/ParquetPlainEncoder.cs
+index a73d42d..68149e6 100644
+--- a/src/Parquet/Encodings/ParquetPlainEncoder.cs
++++ b/src/Parquet/Encodings/ParquetPlainEncoder.cs
+@@ -370,8 +370,12 @@ static class ParquetPlainEncoder {
+                 result = BitConverter.GetBytes(days);
+                 return true;
+             case TType.INT64:
+-                long unixTime = value.ToUtc().ToUnixMilliseconds();
+-                result = BitConverter.GetBytes(unixTime);
++                // In the column's unit, exactly as Encode(ReadOnlySpan<DateTime>) writes its values: statistics in
++                // another unit make readers prune row groups that hold matching rows.
++                using(var ms = new MemoryStream()) {
++                    Encode(new ReadOnlySpan<DateTime>(new[] { value }), ms, tse);
++                    result = ms.ToArray();
++                }
+                 return true;
+             case TType.INT96:
+                 var nano = new NanoTime(value.ToUtc());

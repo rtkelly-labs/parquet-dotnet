@@ -1,0 +1,433 @@
+diff --git a/src/Parquet.Test/StatisticsSortOrderTest.cs b/src/Parquet.Test/StatisticsSortOrderTest.cs
+new file mode 100644
+index 0000000..1345d62
+--- /dev/null
++++ b/src/Parquet.Test/StatisticsSortOrderTest.cs
+@@ -0,0 +1,111 @@
++using System;
++using System.IO;
++using System.Linq;
++using System.Threading.Tasks;
++using Parquet.Meta;
++using Parquet.Schema;
++using Xunit;
++
++namespace Parquet.Test;
++
++/// <summary>
++/// Min/max are written in the order the format defines for each type (parquet.thrift ColumnOrder), and the footer says
++/// so with column_orders.
++/// </summary>
++public class StatisticsSortOrderTest {
++
++    static async Task<FileMetaData> Write<T>(DataField field, params T[] values) where T : struct {
++        using var ms = new MemoryStream();
++        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms)) {
++            using ParquetRowGroupWriter rg = writer.CreateRowGroup();
++            await rg.WriteAsync<T>(field, values.AsMemory());
++        }
++        ms.Position = 0;
++        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
++        return reader.Metadata!;
++    }
++
++    static async Task<Statistics> StatisticsOf<T>(params T[] values) where T : struct =>
++        (await Write(new DataField<T>("c"), values)).RowGroups[0].Columns[0].MetaData!.Statistics!;
++
++    static async Task<Statistics> StatisticsOf(DataField field, params object?[] values) {
++        using var ms = new MemoryStream();
++        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms)) {
++            using ParquetRowGroupWriter rg = writer.CreateRowGroup();
++            if(values[0] is string)
++                await rg.WriteAsync(field, values.Cast<string?>().ToArray());
++            else
++                await rg.WriteAsync(field, values.Cast<byte[]?>().ToArray());
++        }
++        ms.Position = 0;
++        await using ParquetReader reader = await ParquetReader.CreateAsync(ms);
++        return reader.Metadata!.RowGroups[0].Columns[0].MetaData!.Statistics!;
++    }
++
++    [Fact]
++    public async Task Strings_compare_by_code_point() {
++        // U+FF61 is below U+1F600 as a code point (and in UTF-8 bytes), above its surrogate D83D as a UTF-16 code unit
++        Statistics st = await StatisticsOf(new DataField<string>("s"), "\U0001F600", "｡");
++        Assert.Equal("｡", System.Text.Encoding.UTF8.GetString(st.MinValue!));
++        Assert.Equal("\U0001F600", System.Text.Encoding.UTF8.GetString(st.MaxValue!));
++    }
++
++    [Fact]
++    public async Task Byte_arrays_get_unsigned_bytewise_bounds() {
++        Statistics st = await StatisticsOf(new DataField<byte[]>("b"), new byte[] { 2 }, new byte[] { 0xFF }, new byte[] { 1, 5 });
++        Assert.Equal(new byte[] { 1, 5 }, st.MinValue);
++        Assert.Equal(new byte[] { 0xFF }, st.MaxValue);
++    }
++
++    [Fact]
++    public async Task Booleans_get_bounds() {
++        Statistics st = await StatisticsOf(true, false, true);
++        Assert.Equal(new byte[] { 0 }, st.MinValue);
++        Assert.Equal(new byte[] { 1 }, st.MaxValue);
++    }
++
++    [Fact]
++    public async Task NaN_is_never_a_bound() {
++        Statistics st = await StatisticsOf(double.NaN, 2.0, 1.0);
++        Assert.Equal(1.0, BitConverter.ToDouble(st.MinValue!));
++        Assert.Equal(2.0, BitConverter.ToDouble(st.MaxValue!));
++
++        Statistics allNaN = await StatisticsOf(float.NaN, float.NaN);
++        Assert.Null(allNaN.MinValue);
++        Assert.Null(allNaN.MaxValue);
++    }
++
++    [Fact]
++    public async Task Zero_bounds_are_signed_zeros() {
++        Statistics st = await StatisticsOf(0.0, 0.0);
++        Assert.True(double.IsNegative(BitConverter.ToDouble(st.MinValue!)));
++        Assert.False(double.IsNegative(BitConverter.ToDouble(st.MaxValue!)));
++    }
++
++    [Fact]
++    public async Task Footer_declares_type_defined_order_for_each_column() {
++        FileMetaData meta = await Write(new DataField<int>("i"), 1, 2);
++        ColumnOrder order = Assert.Single(meta.ColumnOrders!);
++        Assert.NotNull(order.TYPEORDER);
++    }
++
++    [Fact]
++    public async Task Floating_point_columns_count_their_NaNs() {
++        // required with TYPE_ORDER, even when zero
++        Assert.Equal(2, (await StatisticsOf(double.NaN, 1.0, double.NaN)).NanCount);
++        Assert.Equal(0, (await StatisticsOf(1f, 2f)).NanCount);
++        Assert.Null((await StatisticsOf(1, 2)).NanCount);
++    }
++
++    [Fact]
++    public async Task Deprecated_min_max_only_for_signed_order_columns() {
++        Statistics ints = await StatisticsOf(1, 2);
++        Assert.Equal(ints.MinValue, ints.Min);
++        Assert.Equal(ints.MaxValue, ints.Max);
++
++        Statistics strings = await StatisticsOf(new DataField<string>("s"), "a", "b");
++        Assert.NotNull(strings.MinValue);
++        Assert.Null(strings.Min);
++        Assert.Null(strings.Max);
++    }
++}
+diff --git a/src/Parquet/Data/ColumnStatisticsRules.cs b/src/Parquet/Data/ColumnStatisticsRules.cs
+new file mode 100644
+index 0000000..93ad33c
+--- /dev/null
++++ b/src/Parquet/Data/ColumnStatisticsRules.cs
+@@ -0,0 +1,39 @@
++using Parquet.Meta;
++
++namespace Parquet.Data;
++
++static class ColumnStatisticsRules {
++
++    /// <summary>A column's sort order from its type (parquet-format LogicalTypes.md and parquet.thrift ColumnOrder).</summary>
++    public static ColumnSortOrder SortOrder(SchemaElement se) {
++        if(se.LogicalType?.DECIMAL != null || se.ConvertedType == ConvertedType.DECIMAL)
++            return ColumnSortOrder.Signed;
++        if(se.LogicalType?.INTEGER is { IsSigned: false })
++            return ColumnSortOrder.Unsigned;
++        if(se.ConvertedType is ConvertedType.UINT_8 or ConvertedType.UINT_16 or ConvertedType.UINT_32 or ConvertedType.UINT_64)
++            return ColumnSortOrder.Unsigned;
++        if(se.ConvertedType == ConvertedType.INTERVAL)
++            return ColumnSortOrder.Unknown;
++        if(se.LogicalType?.FLOAT16 != null)
++            return ColumnSortOrder.Signed;
++        return se.Type switch {
++            Type.BOOLEAN or Type.INT32 or Type.INT64 or Type.FLOAT or Type.DOUBLE => ColumnSortOrder.Signed,
++            Type.BYTE_ARRAY or Type.FIXED_LEN_BYTE_ARRAY => ColumnSortOrder.Unsigned,
++            _ => ColumnSortOrder.Unknown,   // INT96
++        };
++    }
++}
++
++/// <summary>
++/// How a column's values are ordered for statistics (parquet-format LogicalTypes.md, "Sort Order").
++/// </summary>
++enum ColumnSortOrder {
++    /// <summary>Signed comparison: numbers, dates, times, timestamps, decimals, booleans.</summary>
++    Signed,
++
++    /// <summary>Unsigned (byte-wise) comparison: strings and byte arrays, unsigned integers, UUIDs.</summary>
++    Unsigned,
++
++    /// <summary>No defined order (INT96, INTERVAL, or a column order the reader does not know): min and max are not usable.</summary>
++    Unknown,
++}
+diff --git a/src/Parquet/Data/DataColumnStatistics.cs b/src/Parquet/Data/DataColumnStatistics.cs
+index f11d592..9961520 100644
+--- a/src/Parquet/Data/DataColumnStatistics.cs
++++ b/src/Parquet/Data/DataColumnStatistics.cs
+@@ -45,6 +45,9 @@ public class DataColumnStatistics {
+     /// </summary>
+     public object? MaxValue { get; internal set; }
+ 
++    /// <summary>Number of NaN values (floating point columns only), written as nan_count.</summary>
++    internal long? NanCount { get; set; }
++
+     internal Statistics ToThriftStatistics(SchemaElement tse) {
+ 
+         if(!ParquetPlainEncoder.TryEncode(MinValue, tse, out byte[]? min)) {
+@@ -55,12 +58,16 @@ public class DataColumnStatistics {
+             throw new ArgumentException($"could not encode {MinValue}", nameof(MinValue));
+         }
+ 
++        // The deprecated min/max are compared signed by the readers that use them: like parquet-cpp, written only for
++        // columns whose order is signed (not strings, byte arrays or unsigned integers).
++        bool legacy = ColumnStatisticsRules.SortOrder(tse) == ColumnSortOrder.Signed;
+         return new Statistics {
+             NullCount = NullCount,
+             DistinctCount = DistinctCount,
+-            Min = min,
++            NanCount = NanCount,
++            Min = legacy ? min : null,
+             MinValue = min,
+-            Max = max,
++            Max = legacy ? max : null,
+             MaxValue = max
+         };
+     }
+diff --git a/src/Parquet/Encodings/ParquetPlainEncoder.cs b/src/Parquet/Encodings/ParquetPlainEncoder.cs
+index a73d42d..962f97b 100644
+--- a/src/Parquet/Encodings/ParquetPlainEncoder.cs
++++ b/src/Parquet/Encodings/ParquetPlainEncoder.cs
+@@ -43,7 +43,7 @@ static class ParquetPlainEncoder {
+         if(t == typeof(bool)) {
+             ReadOnlySpan<bool> span = sourceSpan.AsSpan<T, bool>();
+             Encode(span, destination);
+-            // no stats for bools
++            StatsCompute.Compute(span, stats);
+         } else if(t == typeof(byte)) {
+             ReadOnlySpan<byte> span = sourceSpan.AsSpan<T, byte>();
+             Encode(span, destination, tse);
+@@ -123,7 +123,9 @@ static class ParquetPlainEncoder {
+         } else if(t == typeof(ReadOnlyMemory<byte>)) {
+             ReadOnlySpan<ReadOnlyMemory<byte>> span = sourceSpan.AsSpan<T, ReadOnlyMemory<byte>>();
+             Encode(span, destination);
+-            // todo: minmax
++            // byte-wise min/max is the order of byte arrays, but not of those holding decimals or INTERVAL
++            if(Data.ColumnStatisticsRules.SortOrder(tse) == Data.ColumnSortOrder.Unsigned)
++                StatsCompute.Compute(span, stats);
+         } else if(t == typeof(Guid)) {
+             ReadOnlySpan<Guid> span = sourceSpan.AsSpan<T, Guid>();
+             Encode(span, destination);
+@@ -231,7 +233,7 @@ static class ParquetPlainEncoder {
+ 
+         System.Type t = value.GetType();
+         if(t == typeof(bool)) {
+-            result = null;
++            result = new[] { (bool)value ? (byte)1 : (byte)0 };    // PLAIN boolean, as one byte
+             return true;
+         } else if(t == typeof(byte)) {
+             result = BitConverter.GetBytes((int)(byte)value);
+diff --git a/src/Parquet/Encodings/StatsCompute.cs b/src/Parquet/Encodings/StatsCompute.cs
+index dbe6772..41fe2f7 100644
+--- a/src/Parquet/Encodings/StatsCompute.cs
++++ b/src/Parquet/Encodings/StatsCompute.cs
+@@ -10,12 +10,115 @@ static class StatsCompute {
+         if(stats == null)
+             return;
+ 
++        if(typeof(T) == typeof(float) || typeof(T) == typeof(double)) {
++            ComputeFloating(data, stats);
++            return;
++        }
++
+         MinMax<T>(data, out T min, out T max);
+         stats.MinValue = min;
+         stats.MaxValue = max;
+ 
+     }
+ 
++    /// <summary>
++    /// Floating point min/max as the format requires: NaN never a bound (no bounds when every value is NaN) but counted,
++    /// a zero min written as -0.0 and a zero max as +0.0.
++    /// </summary>
++    private static void ComputeFloating<T>(ReadOnlySpan<T> data, DataColumnStatistics stats) where T : struct, INumber<T> {
++        bool any = false;
++        long nans = 0;
++        T min = default, max = default;
++        foreach(T v in data) {
++            if(T.IsNaN(v)) {
++                nans++;
++                continue;
++            }
++            if(!any) {
++                min = max = v;
++                any = true;
++                continue;
++            }
++            if(v < min)
++                min = v;
++            if(v > max)
++                max = v;
++        }
++        // with TYPE_ORDER, nan_count is required for floating point columns, even when zero
++        stats.NanCount = nans;
++        if(!any) {
++            stats.MinValue = null;
++            stats.MaxValue = null;
++            return;
++        }
++        if(T.IsZero(min))
++            min = -T.Zero;
++        if(T.IsZero(max))
++            max = T.Zero;
++        stats.MinValue = min;
++        stats.MaxValue = max;
++    }
++
++    /// <summary>Min/max of booleans (false before true).</summary>
++    public static void Compute(ReadOnlySpan<bool> data, DataColumnStatistics? stats) {
++        if(stats == null)
++            return;
++        if(data.IsEmpty) {
++            stats.MinValue = stats.MaxValue = null;
++            return;
++        }
++        bool min = data.IndexOf(false) < 0;     // all true: min is true
++        bool max = data.IndexOf(true) >= 0;
++        stats.MinValue = min;
++        stats.MaxValue = max;
++    }
++
++    /// <summary>Min/max of byte arrays in unsigned byte-wise order (strings, binary, fixed, UUIDs).</summary>
++    public static void Compute(ReadOnlySpan<ReadOnlyMemory<byte>> data, DataColumnStatistics? stats) {
++        if(stats == null)
++            return;
++        if(data.IsEmpty) {
++            stats.MinValue = stats.MaxValue = null;
++            return;
++        }
++        ReadOnlyMemory<byte> min = data[0], max = min;
++        foreach(ReadOnlyMemory<byte> v in data) {
++            if(v.Span.SequenceCompareTo(min.Span) < 0)
++                min = v;
++            if(v.Span.SequenceCompareTo(max.Span) > 0)
++                max = v;
++        }
++        // like parquet-cpp's default, no bounds rather than footers holding very long values
++        if(min.Length > MaxBoundBytes || max.Length > MaxBoundBytes) {
++            stats.MinValue = stats.MaxValue = null;
++            return;
++        }
++        stats.MinValue = min.ToArray();
++        stats.MaxValue = max.ToArray();
++    }
++
++    internal const int MaxBoundBytes = 4096;
++
++    /// <summary>
++    /// UTF-16 strings in Unicode code point order, which is UTF-8 byte order (the format's order for strings): code
++    /// unit order differs only where a surrogate meets a code unit from U+E000 to U+FFFF.
++    /// </summary>
++    internal static int CompareCodePoints(ReadOnlySpan<char> a, ReadOnlySpan<char> b) {
++        int n = Math.Min(a.Length, b.Length);
++        for(int i = 0; i < n; i++) {
++            char x = a[i], y = b[i];
++            if(x == y)
++                continue;
++            if(x >= 0xD800 && y >= 0xD800)
++                return Fixup(x).CompareTo(Fixup(y));
++            return x.CompareTo(y);
++        }
++        return a.Length.CompareTo(b.Length);
++
++        // surrogates (D800-DFFF) sort after E000-FFFF
++        static int Fixup(char c) => c >= 0xE000 ? c - 0x800 : c + 0x2000;
++    }
++
+     public static void Compute(ReadOnlySpan<string> data, DataColumnStatistics? stats) {
+         if(stats == null)
+             return;
+@@ -39,17 +142,17 @@ static class StatsCompute {
+             string b = data[i + 1];
+ 
+             // 1 comparison to order the pair
+-            if(a.AsSpan().SequenceCompareTo(b.AsSpan()) <= 0) {
++            if(CompareCodePoints(a, b) <= 0) {
+                 // a <= b: a is candidate for min, b for max
+-                if(a.AsSpan().SequenceCompareTo(min.AsSpan()) < 0)
++                if(CompareCodePoints(a, min) < 0)
+                     min = a;
+-                if(b.AsSpan().SequenceCompareTo(max.AsSpan()) > 0)
++                if(CompareCodePoints(b, max) > 0)
+                     max = b;
+             } else {
+                 // b < a: b is candidate for min, a for max
+-                if(b.AsSpan().SequenceCompareTo(min.AsSpan()) < 0)
++                if(CompareCodePoints(b, min) < 0)
+                     min = b;
+-                if(a.AsSpan().SequenceCompareTo(max.AsSpan()) > 0)
++                if(CompareCodePoints(a, max) > 0)
+                     max = a;
+             }
+         }
+@@ -57,9 +160,9 @@ static class StatsCompute {
+         // handle the odd trailing element
+         if(i < len) {
+             string last = data[i];
+-            if(last.AsSpan().SequenceCompareTo(min.AsSpan()) < 0)
++            if(CompareCodePoints(last, min) < 0)
+                 min = last;
+-            else if(last.AsSpan().SequenceCompareTo(max.AsSpan()) > 0)
++            else if(CompareCodePoints(last, max) > 0)
+                 max = last;
+         }
+ 
+@@ -87,24 +190,24 @@ static class StatsCompute {
+             ReadOnlyMemory<char> a = data[i];
+             ReadOnlyMemory<char> b = data[i + 1];
+ 
+-            if(a.Span.SequenceCompareTo(b.Span) <= 0) {
+-                if(a.Span.SequenceCompareTo(min.Span) < 0)
++            if(CompareCodePoints(a.Span, b.Span) <= 0) {
++                if(CompareCodePoints(a.Span, min.Span) < 0)
+                     min = a;
+-                if(b.Span.SequenceCompareTo(max.Span) > 0)
++                if(CompareCodePoints(b.Span, max.Span) > 0)
+                     max = b;
+             } else {
+-                if(b.Span.SequenceCompareTo(min.Span) < 0)
++                if(CompareCodePoints(b.Span, min.Span) < 0)
+                     min = b;
+-                if(a.Span.SequenceCompareTo(max.Span) > 0)
++                if(CompareCodePoints(a.Span, max.Span) > 0)
+                     max = a;
+             }
+         }
+ 
+         if(i < len) {
+             ReadOnlyMemory<char> last = data[i];
+-            if(last.Span.SequenceCompareTo(min.Span) < 0)
++            if(CompareCodePoints(last.Span, min.Span) < 0)
+                 min = last;
+-            else if(last.Span.SequenceCompareTo(max.Span) > 0)
++            else if(CompareCodePoints(last.Span, max.Span) > 0)
+                 max = last;
+         }
+ 
+diff --git a/src/Parquet/File/ThriftFooter.cs b/src/Parquet/File/ThriftFooter.cs
+index 2838a87..a395f7c 100644
+--- a/src/Parquet/File/ThriftFooter.cs
++++ b/src/Parquet/File/ThriftFooter.cs
+@@ -48,6 +48,13 @@ class ThriftFooter {
+         _fileMeta = CreateThriftSchema(schema, options);
+         _fileMeta.NumRows = totalRowCount;
+ 
++        // Statistics follow each column's type-defined sort order. Without saying so, readers (parquet-cpp, parquet-mr)
++        // trust min/max of unsigned-order columns (strings, binary) only from writers they know, and ignore them here.
++        _fileMeta.ColumnOrders = _fileMeta.Schema
++            .Where(se => se.Type != null)
++            .Select(_ => new ColumnOrder { TYPEORDER = new TypeDefinedOrder() })
++            .ToList();
++
+ 
+         // Looks like Spark is sensitive about this format. See https://github.com/aloneguid/parquet-dotnet/issues/261
+ #if DEBUG
