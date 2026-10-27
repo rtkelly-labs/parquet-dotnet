@@ -17,13 +17,14 @@ an earlier fork commit. The **Commits** line of each unit says which parts of wh
 2. Read the diff: `git diff 658e1ca ccr-87fadcf9-bxi9wr -- <files>` shows the fork's final state of the unit's files,
    which may include other units' changes in the same file. `git show <commit> -- <files>` shows one commit's part.
 3. Check the points under **Review** (the places I am least sure of, or that are judgement calls for upstream).
-4. Run the fork suite: `dotnet test src/Parquet.Test` (768 passed, 3 skipped at the branch head on Linux, .NET 10,
-   with `pyarrow` installed for one Arrow interop test).
+4. Run the fork suite: `dotnet test src/Parquet.Test` (768 passed, 3 skipped on each of net8.0 and net10.0 at the branch
+   head on Linux, with `pyarrow` installed for one Arrow interop test).
 
 What has **not** been verified, for every unit:
 
-- **Windows and macOS.** The fork's own Actions workflow is not enabled. Everything ran on Linux; the test project
-  targets `net10.0` only, so the `net8.0` build of the library was compiled but never tested.
+- **Windows and macOS** locally: the fork's own Actions workflow is not enabled, and everything here ran on Linux.
+  Iceberg.NET's CI runs this suite on Linux, Windows and macOS (job `parquet-net-fork`, from the submodule); check its
+  latest run for those platforms.
 - **Each unit alone on upstream `master`.** The units were developed one on top of another. Applying one by itself
   may need small adjustments (a shared file, a test helper).
 - **Upstream's conventions.** Code style follows the surrounding code as far as I could tell, but upstream's
@@ -46,6 +47,8 @@ to get accepted and they build trust for the larger features.
 | 8 | Statistics in each type's sort order | bug | medium | (7) |
 | 9 | Statistics decoded as the column's type | bug | small | |
 | 10 | Zstd decompression without double copies | perf | small | |
+| 10b | Byte-array and text values: one array per page | perf | small | |
+| 10c | Tests on net8.0 too (one test did not compile there) | tests | tiny | |
 | 11 | Field IDs on every field, read back | feature | small | |
 | 12 | `FIXED_LEN_BYTE_ARRAY(n)` byte arrays | feature | small | |
 | 13 | `ParquetOptions.WriteStatistics` | feature | tiny | |
@@ -161,6 +164,24 @@ to get accepted and they build trust for the larger features.
 - **Review:** `ConcurrentZstdTest` is a smoke test only, it did not reproduce the race on the unfixed code. Judge
   whether a `[ThreadStatic]` cache is acceptable upstream at all (simplest alternative: a new `Decompressor` per page,
   keeping the single-copy part). The frame-header size fallback covers frames without a content size.
+
+## 10b. Byte-array and text values: one array per page
+
+- **Commits:** `003c77f`.
+- **Problem:** PLAIN decoding of BYTE_ARRAY / FIXED_LEN_BYTE_ARRAY allocated a `byte[]` per value, and text a
+  `char[]` per value. Reading 1M UUIDs or strings spent as much time allocating as decoding.
+- **Change:** each page is copied once into one array, and every value is a slice of it.
+- **Review — trade-off:** a value the caller keeps alive keeps its whole page's array alive (one `ReadOnlyMemory`
+  slice pins the page). For callers that keep a few values out of large pages that is more memory than before; upstream
+  may prefer it behind an option. The char buffer is sized at one char per byte, which UTF-8 never exceeds.
+
+## 10c. Tests on net8.0 too
+
+- **Commits:** `c093dc0`.
+- **Problem:** the library targets net8.0 and net10.0 but its tests ran on net10.0 only. One upstream test
+  (`BigDecimalTest`) does not compile for net8.0: under C# 14, `bytes.Reverse()` binds to the in-place `Span`
+  overload, which returns `void`.
+- **Change:** `Enumerable.Reverse(bytes)`; the test project targets both. Both pass (768 each).
 
 ## 11. Field IDs on every field, read back
 
