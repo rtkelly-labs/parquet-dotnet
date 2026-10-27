@@ -22,6 +22,7 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
     private readonly ParquetOptions _options;
     private bool _dataWritten;
     private readonly List<ParquetRowGroupWriter> _openedWriters = new List<ParquetRowGroupWriter>();
+    private readonly Encryption.FileEncryptor? _encryptor;
 
     private ParquetWriter(ParquetSchema schema, Stream output, ParquetOptions? options = null, bool append = false)
        : base(output.CanSeek == true ? output : new MeteredWriteStream(output)) {
@@ -32,6 +33,11 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
             throw new ArgumentException("stream is not writeable", nameof(output));
         _schema = schema ?? throw new ArgumentNullException(nameof(schema));
         _options = options ?? new ParquetOptions();
+        if(_options.Encryption != null) {
+            if(append)
+                throw new NotSupportedException("appending to encrypted files is not supported");
+            _encryptor = new Encryption.FileEncryptor(_options.Encryption);
+        }
     }
 
     /// <summary>
@@ -58,7 +64,7 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
     public ParquetRowGroupWriter CreateRowGroup() {
         _dataWritten = true;
 
-        var writer = new ParquetRowGroupWriter(Stream, _footer!, _options);
+        var writer = new ParquetRowGroupWriter(Stream, _footer!, _options, _encryptor, _openedWriters.Count);
 
         _openedWriters.Add(writer);
 
@@ -82,8 +88,12 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
                 throw new IOException($"you can only append to existing streams, but current stream is empty.");
 
             await ValidateFileAsync();
+            if(HasEncryptedFooter)
+                throw new NotSupportedException("appending to encrypted files is not supported");
 
             FileMetaData fileMeta = await ReadMetadataAsync(cancellationToken);
+            if(Decryptor != null)
+                throw new NotSupportedException("appending to encrypted files is not supported");
             _footer = new ThriftFooter(fileMeta);
 
             ValidateSchemasCompatible(_footer, _schema);
@@ -114,7 +124,10 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
         }
     }
 
-    private Task WriteMagicAsync() => Stream.WriteAsync(MagicBytes, 0, MagicBytes.Length);
+    // an encrypted footer is marked by "PARE" at both ends
+    private Task WriteMagicAsync() => _encryptor?.EncryptedFooter == true
+        ? Stream.WriteAsync(EncryptedMagicBytes, 0, EncryptedMagicBytes.Length)
+        : Stream.WriteAsync(MagicBytes, 0, MagicBytes.Length);
 
     private void DisposeCore() {
         if(_dataWritten) {
@@ -132,7 +145,15 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
         if(_footer == null)
             return;
 
-        long size = await _footer.WriteAsync(Stream).ConfigureAwait(false);
+        long size;
+        if(_encryptor != null) {
+            _encryptor.Seal(_footer.Meta);
+            byte[] footer = _encryptor.Footer(_footer.Meta);
+            await Stream.WriteAsync(footer, 0, footer.Length);
+            size = footer.Length;
+        } else {
+            size = await _footer.WriteAsync(Stream).ConfigureAwait(false);
+        }
         await Stream.WriteInt32Async((int)size);
         await WriteMagicAsync();
         await Stream.FlushAsync();

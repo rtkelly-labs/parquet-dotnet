@@ -13,6 +13,7 @@ namespace Parquet;
 /// </summary>
 public class ParquetActor {
     internal static readonly byte[] MagicBytes = Encoding.ASCII.GetBytes("PAR1");
+    internal static readonly byte[] EncryptedMagicBytes = Encoding.ASCII.GetBytes("PARE");
     private readonly Stream _fileStream;
 
     internal ParquetActor(Stream? fileStream) =>
@@ -35,15 +36,33 @@ public class ParquetActor {
         _fileStream.Seek(-4, SeekOrigin.End);
         byte[] tail = await _fileStream.ReadBytesExactlyAsync(4);
 
-        if(!MagicBytes.SequenceEqual(head) || !MagicBytes.SequenceEqual(tail))
+        bool plain = MagicBytes.SequenceEqual(head) && MagicBytes.SequenceEqual(tail);
+        bool encrypted = EncryptedMagicBytes.SequenceEqual(head) && EncryptedMagicBytes.SequenceEqual(tail);
+        if(!plain && !encrypted)
             throw new IOException($"not a parquet file, head: {head.ToHexString()}, tail: {tail.ToHexString()}");
+        HasEncryptedFooter = encrypted;
     }
 
-    internal async ValueTask<Parquet.Meta.FileMetaData> ReadMetadataAsync(CancellationToken cancellationToken = default) {
+    /// <summary>The file ends in "PARE": its footer is encrypted.</summary>
+    internal bool HasEncryptedFooter { get; private set; }
+
+    /// <summary>Decrypts the file's columns, when it has encrypted ones (set by <see cref="ReadMetadataAsync"/>).</summary>
+    internal Encryption.FileDecryptor? Decryptor { get; private set; }
+
+    internal async ValueTask<Parquet.Meta.FileMetaData> ReadMetadataAsync(CancellationToken cancellationToken = default,
+        Encryption.ParquetDecryptionOptions? decryption = null) {
         int footerLength = await GoBeforeFooterAsync();
         byte[] footerData = await _fileStream.ReadBytesExactlyAsync(footerLength);
+        if(HasEncryptedFooter) {
+            (Meta.FileMetaData meta, Encryption.FileDecryptor decryptor) = Encryption.FileDecryptor.ReadEncryptedFooter(footerData, decryption);
+            Decryptor = decryptor;
+            return meta;
+        }
         using var ms = new MemoryStream(footerData);
-        return Parquet.Meta.FileMetaData.Read(new Meta.Proto.ThriftCompactProtocolReader(ms));
+        Meta.FileMetaData result = Parquet.Meta.FileMetaData.Read(new Meta.Proto.ThriftCompactProtocolReader(ms));
+        if(result.EncryptionAlgorithm != null)
+            Decryptor = Encryption.FileDecryptor.ForPlaintextFooter(result, footerData, (int)ms.Position, decryption);
+        return result;
     }
 
     internal async ValueTask<int> GoBeforeFooterAsync() {

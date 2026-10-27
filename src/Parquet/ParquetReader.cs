@@ -40,7 +40,7 @@ public class ParquetReader : ParquetActor, IAsyncDisposable {
         await ValidateFileAsync();
 
         //read metadata instantly, now
-        _meta = await ReadMetadataAsync(cancellationToken);
+        _meta = await ReadMetadataAsync(cancellationToken, _parquetOptions.Decryption);
         _thriftFooter = new ThriftFooter(_meta);
 
         InitRowGroupReaders();
@@ -146,8 +146,9 @@ public class ParquetReader : ParquetActor, IAsyncDisposable {
         if(_meta?.RowGroups == null)
             throw new InvalidOperationException("no row groups in metadata");
 
-        foreach(RowGroup rowGroup in _meta.RowGroups) {
-            _groupReaders.Add(new ParquetRowGroupReader(rowGroup, _thriftFooter!, Stream, _parquetOptions));
+        for(int i = 0; i < _meta.RowGroups.Count; i++) {
+            _groupReaders.Add(new ParquetRowGroupReader(_meta.RowGroups[i], _thriftFooter!, Stream, _parquetOptions,
+                Decryptor, _meta.RowGroups[i].Ordinal ?? i));
         }
     }
 

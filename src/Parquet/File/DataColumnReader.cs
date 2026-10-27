@@ -27,6 +27,9 @@ class DataColumnReader {
     private readonly ParquetOptions _options;
     private readonly DataColumnStatistics? _stats;
     private readonly CompressionMethod _compressionMethod;
+    private readonly Encryption.ColumnDecryptor? _decryptor;
+    private bool _pageIsDictionary;
+    private int _dataPageOrdinal;
     private static readonly RecyclableMemoryStreamManager _rmsMgr = new RecyclableMemoryStreamManager();
 
     internal DataColumnReader(
@@ -35,7 +38,9 @@ class DataColumnReader {
        ColumnChunk thriftColumnChunk,
        DataColumnStatistics? stats,
        ThriftFooter footer,
-       ParquetOptions? parquetOptions) {
+       ParquetOptions? parquetOptions,
+       Encryption.ColumnDecryptor? decryptor = null) {
+        _decryptor = decryptor;
         _dataField = dataField ?? throw new ArgumentNullException(nameof(dataField));
         _inputStream = inputStream ?? throw new ArgumentNullException(nameof(inputStream));
         _thriftColumnChunk = thriftColumnChunk ?? throw new ArgumentNullException(nameof(thriftColumnChunk));
@@ -68,11 +73,16 @@ class DataColumnReader {
 
         long fileOffset = GetFileOffset();
         long pageOffset = fileOffset;
+        // encrypted: a page header's AAD depends on whether it is the dictionary page's, which comes first when there is one
+        bool dictionaryFirst = _thriftColumnChunk.MetaData.DictionaryPageOffset is > 0;
 
         while(rc.ValuesRead < totalValuesInChunk) {
             // use absolute positioning on every page read, because in some edge cases page reader may not exhaust or over-read page data
             _inputStream.Seek(pageOffset, SeekOrigin.Begin);
-            PageHeader ph = PageHeader.Read(new ThriftCompactProtocolReader(_inputStream));
+            _pageIsDictionary = dictionaryFirst && pageOffset == fileOffset;
+            PageHeader ph = _decryptor == null
+                ? PageHeader.Read(new ThriftCompactProtocolReader(_inputStream))
+                : _decryptor.ReadHeader(_inputStream, _pageIsDictionary, _dataPageOrdinal);
             pageOffset = _inputStream.Position + ph.CompressedPageSize;
 
             switch(ph.Type) {
@@ -88,12 +98,24 @@ class DataColumnReader {
                 default:
                     throw new NotSupportedException($"can't read page type {ph.Type}");
             }
+            if(ph.Type != PageType.DICTIONARY_PAGE)
+                _dataPageOrdinal++;
         }
     }
 
     private async ValueTask<IMemoryOwner<byte>> ReadPageDataAsync(PageHeader ph) {
+        if(_decryptor != null) {
+            using var ms = new MemoryStream(await ReadEncryptedPageAsync(ph), false);
+            return await Compressor.Instance.Decompress(_compressionMethod, ms, ph.UncompressedPageSize);
+        }
         Stream src = _inputStream.Sub(_inputStream.Position, ph.CompressedPageSize);
         return await Compressor.Instance.Decompress(_compressionMethod, src, ph.UncompressedPageSize);
+    }
+
+    /// <summary>The page's (compressed) bytes, decrypted.</summary>
+    private async ValueTask<byte[]> ReadEncryptedPageAsync(PageHeader ph) {
+        byte[] module = await _inputStream.ReadBytesExactlyAsync(ph.CompressedPageSize);
+        return _decryptor!.Page(module, _pageIsDictionary, _dataPageOrdinal);
     }
 
     private async ValueTask ReadDictionaryPageAsync<T>(PageHeader ph, ReadingColumn<T> rc, CancellationToken cancellationToken) where T : struct {
@@ -167,10 +189,17 @@ class DataColumnReader {
             throw new ParquetException($"column '{_dataField.Path}' is missing data page header, file is corrupt");
         }
 
-        using var pageMemory = MemoryOwner<byte>.Allocate(ph.CompressedPageSize);
-        await using(Stream src = _inputStream.Sub(_inputStream.Position, ph.CompressedPageSize)) {
+        MemoryOwner<byte> pageMemory;
+        if(_decryptor != null) {
+            byte[] page = await ReadEncryptedPageAsync(ph);
+            pageMemory = MemoryOwner<byte>.Allocate(page.Length);
+            page.CopyTo(pageMemory.Span);
+        } else {
+            pageMemory = MemoryOwner<byte>.Allocate(ph.CompressedPageSize);
+            await using Stream src = _inputStream.Sub(_inputStream.Position, ph.CompressedPageSize);
             await src.CopyToAsync(pageMemory.Memory, cancellationToken);
         }
+        using MemoryOwner<byte> pageMemoryOwner = pageMemory;
         int dataUsed = 0;
 
         if(_dataField.MaxRepetitionLevel > 0) {
