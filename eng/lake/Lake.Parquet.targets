@@ -1,0 +1,37 @@
+<Project>
+    <!--
+      Turns upstream's Parquet.Net project into Lake.Parquet. Only the Lake build imports it, as
+      -p:CustomBeforeMicrosoftCommonTargets=<this file>, on a copy whose namespaces
+      eng/lake/RenameNamespace.cs has already rewritten. Upstream's own build never sees it, so no
+      upstream file has to change (README, "How Lake.Parquet is built").
+
+      CustomBefore, not CustomAfter: it is imported after the project's own properties, so these
+      win, but before Microsoft.Common derives TargetName from AssemblyName. Imported any later,
+      the assembly would still be Parquet.dll.
+
+      Every project in the build imports it; only the library itself (MSBuildProjectName Parquet)
+      is renamed. Test assemblies keep their names, so upstream's InternalsVisibleTo entries hold.
+    -->
+    <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Parquet'">
+        <PackageId>Lake.Parquet</PackageId>
+        <AssemblyName>Lake.Parquet</AssemblyName>
+        <RootNamespace>Lake.Parquet</RootNamespace>
+        <Version>0.1.0</Version>
+        <Authors>Ivan Gavryliuk (@aloneguid) and the Parquet.Net contributors, with changes by rtkelly-labs</Authors>
+        <Description>A fork of Parquet.Net (aloneguid/parquet-dotnet) that carries upstream plus only the improvements evaluated against it, in the Lake.Parquet namespace. Every change on top of upstream is recorded in docs/changes/.</Description>
+        <PackageTags>apache parquet lake lakehouse dotnet c# parquet.net fork</PackageTags>
+        <PackageProjectUrl>https://github.com/rtkelly-labs/parquet-dotnet</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/rtkelly-labs/parquet-dotnet</RepositoryUrl>
+        <PackageReadmeFile>PACKAGE_README.md</PackageReadmeFile>
+        <!-- Upstream hard-codes bin\Debug\...\Parquet.xml; the docs must sit beside Lake.Parquet.dll under its name. -->
+        <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\Lake.Parquet.xml</DocumentationFile>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(MSBuildProjectName)' == 'Parquet'">
+        <!-- Upstream packs docs/README.md as Parquet.Net's readme; Lake.Parquet has its own. -->
+        <None Remove="..\..\docs\README.md" />
+        <None Include="$(MSBuildThisFileDirectory)PACKAGE_README.md" Pack="true" PackagePath="\" />
+        <!-- MIT asks for the copyright notice in every copy; upstream's package only carries the expression. -->
+        <None Include="$(MSBuildThisFileDirectory)..\..\LICENSE" Pack="true" PackagePath="\" />
+    </ItemGroup>
+</Project>

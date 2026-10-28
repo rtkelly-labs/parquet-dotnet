@@ -1,0 +1,183 @@
+name: Lake.Parquet
+
+# Builds, tests and publishes Lake.Parquet: upstream's Parquet.Net, renamed into the Lake.Parquet
+# namespace on a throwaway copy, with upstream's own test suite run against the renamed build.
+# README.md, "How Lake.Parquet is built", explains the rename.
+#
+# This file is the fork's own; upstream's build.yml is left as upstream wrote it and still runs.
+# `lake-ci` is the required check (rig docs/forks.md). Unlike upstream's workflow it has no
+# paths-ignore, so a PR that only adds a change record still reports it.
+#
+# Actions are pinned to commit SHAs by hand: rig's pinning policy is not applied to forks, because
+# it would also rewrite upstream's workflow and conflict on every sync.
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the version in eng/lake/Lake.Parquet.targets to nuget.org and tag lake-v<version>"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_NOLOGO: true
+  LAKE_TARGETS: ${{ github.workspace }}/eng/lake/Lake.Parquet.targets
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Read the Lake.Parquet version
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' eng/lake/Lake.Parquet.targets)
+          [ -n "$version" ] || { echo "::error::no <Version> in eng/lake/Lake.Parquet.targets"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Lake.Parquet $version"
+
+      # The checkout keeps upstream's namespaces so upstream merges stay conflict-free; only this
+      # copy is renamed.
+      - name: Rename a copy to Lake.Parquet
+        run: |
+          set -euo pipefail
+          rsync -a --exclude .git ./ "$RUNNER_TEMP/lake/"
+          dotnet run eng/lake/RenameNamespace.cs -- "$RUNNER_TEMP/lake/src" Parquet Lake.Parquet
+
+      # Both hooks: CustomBefore...Targets renames the assembly in each target framework's build,
+      # and CustomBefore...CrossTargetingTargets sets the package id and version in the outer build
+      # that packs. Build first, then pack --no-build: upstream's GeneratePackageOnBuild otherwise
+      # races the pack.
+      - name: Build
+        working-directory: ${{ runner.temp }}/lake
+        run: >-
+          dotnet build src/Parquet.Test/Parquet.Test.csproj --configuration Release
+          -p:CustomBeforeMicrosoftCommonTargets="$LAKE_TARGETS"
+          -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$LAKE_TARGETS"
+          && dotnet build src/Parquet/Parquet.csproj --configuration Release
+          -p:CustomBeforeMicrosoftCommonTargets="$LAKE_TARGETS"
+          -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$LAKE_TARGETS"
+
+      - name: Verify the assemblies are renamed
+        working-directory: ${{ runner.temp }}/lake
+        run: >-
+          dotnet run "$GITHUB_WORKSPACE/eng/lake/VerifyLakeAssembly.cs" --
+          src/Parquet/bin/Release/net10.0/Lake.Parquet.dll
+          src/Parquet/bin/Release/net8.0/Lake.Parquet.dll
+
+      # Upstream's own suite, against the renamed build.
+      - name: Test
+        working-directory: ${{ runner.temp }}/lake
+        run: >-
+          dotnet test src/Parquet.Test/Parquet.Test.csproj --configuration Release --no-build
+          -p:CustomBeforeMicrosoftCommonTargets="$LAKE_TARGETS"
+          -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$LAKE_TARGETS"
+
+      - name: Pack
+        working-directory: ${{ runner.temp }}/lake
+        run: >-
+          dotnet pack src/Parquet/Parquet.csproj --configuration Release --no-build
+          -p:CustomBeforeMicrosoftCommonTargets="$LAKE_TARGETS"
+          -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$LAKE_TARGETS"
+          --output "$GITHUB_WORKSPACE/artifacts"
+
+      - name: Check the package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          pkg="artifacts/Lake.Parquet.$VERSION.nupkg"
+          [ -f "$pkg" ] || { echo "::error::$pkg was not produced"; ls artifacts; exit 1; }
+          entries=$(unzip -Z1 "$pkg")
+          for want in LICENSE PACKAGE_README.md lib/net8.0/Lake.Parquet.dll lib/net10.0/Lake.Parquet.dll; do
+            grep -qx "$want" <<< "$entries" || { echo "::error::$pkg lacks $want"; exit 1; }
+          done
+          if grep -q "Parquet.dll$" <<< "$(grep -v Lake.Parquet.dll <<< "$entries")"; then
+            echo "::error::$pkg still carries an upstream-named assembly"; exit 1
+          fi
+          echo "$entries"
+
+      - name: Upload the package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lake-parquet
+          path: artifacts/*
+          if-no-files-found: error
+
+  # The single required check.
+  lake-ci:
+    name: lake-ci
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require build
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          echo "build: $BUILD_RESULT"
+          [ "$BUILD_RESULT" = "success" ] || { echo "::error::build did not succeed ($BUILD_RESULT)"; exit 1; }
+
+  publish:
+    name: publish
+    needs: [build]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release create tags lake-v<version>
+      id-token: write # NuGet/login exchanges the OIDC token (trusted publishing)
+    environment: release
+    steps:
+      - name: Download the package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: lake-parquet
+          path: ./artifacts
+
+      - name: Login to NuGet via OIDC (Trusted Publishing)
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER || 'rtk_13' }}
+
+      - name: Push to NuGet
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: >-
+          dotnet nuget push ./artifacts/*.nupkg --api-key "$NUGET_API_KEY"
+          --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: >-
+          gh release create "lake-v$VERSION" ./artifacts/*.nupkg --repo "$GITHUB_REPOSITORY"
+          --target "$GITHUB_SHA" --title "Lake.Parquet $VERSION"
+          --notes "Lake.Parquet $VERSION. The changes it carries on top of upstream are in docs/changes/; the upstream commit it is based on is the merge base of $GITHUB_SHA with aloneguid/parquet-dotnet@master."
