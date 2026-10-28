@@ -41,7 +41,8 @@ fork is where a fix can be made, measured and shipped, while it is offered upstr
 
 1. **Evidence first.** A failing test or a benchmark against upstream (Parquet.SourceGenerator's
    cross-library suite, or a test here) shows the problem.
-2. **The smallest fix**, in upstream's style, through a PR to this fork, with a record.
+2. **The smallest fix**, in upstream's style, on its own `lake/change/` branch cut from upstream, so
+   the branch is exactly what an upstream PR would contain, with a record.
 3. **Evaluated against upstream**: the same tests or benchmarks, before and after, in the record.
 4. **Offered upstream** where it is generally useful, by a person (upstream's rules), or noted as
    proposed when someone else has raised the same thing. Others may well reach the same conclusion

@@ -8,7 +8,10 @@ workflow, and carries a short list of recorded changes. Read `README.md` and `do
 
 - Keep upstream's code as upstream wrote it. Do not reformat, rename or restructure upstream files:
   every edit to one is a merge conflict on the next upstream sync. Add new files where possible.
-- Every change on top of upstream is one PR with one record in `docs/changes/` (see its README).
+- Every change on top of upstream has one record in `docs/changes/` (see its README). Additions that
+  only add files are squash-merged PRs into `master`. A change to upstream's code lives on its own
+  `lake/change/NNNN-name` branch cut from `upstream/master`, is merged into `master` with a merge
+  commit, and the branch is kept, not deleted.
 - Upstream merges arrive as merge commits through sync PRs (rig `repo-governance fork-sync`). Never
   rebase onto upstream, and never squash a sync PR.
 - Source keeps the `Parquet` namespace. `Lake.Parquet` exists only in the CI build (`eng/lake/`).

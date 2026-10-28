@@ -76,14 +76,23 @@ fork's own required check.
 
 Upstream is merged in with a merge commit through a sync PR (rig's `repo-governance fork-sync`). It
 is never rebased or squashed, so the fork's history keeps upstream's commits and the next sync brings
-only the difference. The fork's own changes are squash-merged, one PR and one record each. The rules
-are in rig's [`docs/forks.md`](https://github.com/rtkelly13/rig/blob/main/docs/forks.md), and
-`repo-governance fork-status` checks them.
+only the difference.
+
+The fork's own work comes in two kinds ([details](docs/changes/README.md)):
+
+- **Additions** (this packaging, CI, docs, tests) only add files and are squash-merged into `master`.
+- **Code changes** each live on a `lake/change/NNNN-name` branch cut from upstream, merged into
+  `master` with a merge commit and kept. A sync merges upstream into every change branch too, so a
+  conflict is resolved where only that change is in view, and a branch that no longer differs from
+  upstream shows the change can be retired.
+
+The rules are in rig's [`docs/forks.md`](https://github.com/rtkelly13/rig/blob/main/docs/forks.md),
+and `repo-governance fork-status` checks them.
 
 ## Contributing
 
-- Every change on top of upstream comes through a PR with a record in `docs/changes/`
-  ([format](docs/changes/README.md)).
+- Every change on top of upstream has a record in `docs/changes/` ([format](docs/changes/README.md)):
+  an addition through a squash-merged PR, a code change through its `lake/change/` branch.
 - Prefer upstream. If a change is useful to everyone, it belongs in Parquet.Net; the record links the
   upstream issue or PR.
 - **Upstream does not accept AI-generated issues or pull requests**, and blocks accounts that send
