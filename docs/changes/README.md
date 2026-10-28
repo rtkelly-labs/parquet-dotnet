@@ -45,4 +45,4 @@ the code and deletes its record together.
 
 | Record | Status |
 |---|---|
-| [0001 Lake.Parquet packaging and fork scaffolding](0001-lake-parquet-packaging.md) | fork-only |
+| [0001 Lake.Parquet packaging and fork scaffolding](0001-lake-parquet-packaging.md) (#1) | fork-only |
