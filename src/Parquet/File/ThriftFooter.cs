@@ -48,6 +48,13 @@ class ThriftFooter {
         _fileMeta = CreateThriftSchema(schema, options);
         _fileMeta.NumRows = totalRowCount;
 
+        // Statistics follow each column's type-defined sort order. Without saying so, readers (parquet-cpp, parquet-mr)
+        // trust min/max of unsigned-order columns (strings, binary) only from writers they know, and ignore them here.
+        _fileMeta.ColumnOrders = _fileMeta.Schema
+            .Where(se => se.Type != null)
+            .Select(_ => new ColumnOrder { TYPEORDER = new TypeDefinedOrder() })
+            .ToList();
+
 
         // Looks like Spark is sensitive about this format. See https://github.com/aloneguid/parquet-dotnet/issues/261
 #if DEBUG
