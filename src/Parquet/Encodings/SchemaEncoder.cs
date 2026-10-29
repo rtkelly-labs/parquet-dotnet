@@ -464,6 +464,8 @@ static class SchemaEncoder {
     }
 
     public static SchemaElement Encode(DataField field, ParquetOptions options) {
+        if(field is RawDataField raw)
+            return raw.ToSchemaElement();
         SType st = field.ClrType;
         var tse = new SchemaElement { Name = field.Name };
 
