@@ -73,6 +73,44 @@ static class StatsCompute {
         stats.MaxValue = max;
     }
 
+    /// <summary>Min/max of INT32 values annotated unsigned, compared as unsigned and kept as their bits.</summary>
+    public static void ComputeUnsigned(ReadOnlySpan<int> data, DataColumnStatistics? stats) {
+        if(stats == null)
+            return;
+        if(data.IsEmpty) {
+            stats.MinValue = stats.MaxValue = null;
+            return;
+        }
+        uint min = (uint)data[0], max = min;
+        foreach(int v in data) {
+            if((uint)v < min)
+                min = (uint)v;
+            if((uint)v > max)
+                max = (uint)v;
+        }
+        stats.MinValue = (int)min;
+        stats.MaxValue = (int)max;
+    }
+
+    /// <summary>Min/max of INT64 values annotated unsigned, compared as unsigned and kept as their bits.</summary>
+    public static void ComputeUnsigned(ReadOnlySpan<long> data, DataColumnStatistics? stats) {
+        if(stats == null)
+            return;
+        if(data.IsEmpty) {
+            stats.MinValue = stats.MaxValue = null;
+            return;
+        }
+        ulong min = (ulong)data[0], max = min;
+        foreach(long v in data) {
+            if((ulong)v < min)
+                min = (ulong)v;
+            if((ulong)v > max)
+                max = (ulong)v;
+        }
+        stats.MinValue = (long)min;
+        stats.MaxValue = (long)max;
+    }
+
     /// <summary>Min/max of byte arrays in unsigned byte-wise order (strings, binary, fixed, UUIDs).</summary>
     public static void Compute(ReadOnlySpan<ReadOnlyMemory<byte>> data, DataColumnStatistics? stats) {
         if(stats == null)
