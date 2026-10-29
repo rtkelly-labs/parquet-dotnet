@@ -285,7 +285,7 @@ static class ParquetPlainEncoder {
             result = ((Interval)value).GetBytes();
             return true;
         } else if(t == typeof(Guid)) {
-            result = ((Guid)value).ToByteArray();
+            result = ((Guid)value).ToByteArray(bigEndian: true);   // the UUID's RFC byte order, as its values are written
             return true;
         } else if(t == typeof(string)) {
             result = System.Text.Encoding.UTF8.GetBytes((string)value);
@@ -339,6 +339,10 @@ static class ParquetPlainEncoder {
                 result = value;
                 return true;
             }
+        else if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY && tse.LogicalType?.UUID != null && value.Length == 16) {
+            result = new Guid(value, bigEndian: true);  // the RFC 4122 bytes, as the values are written
+            return true;
+        }
 
         result = null;
         return false;
