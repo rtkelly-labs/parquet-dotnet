@@ -321,10 +321,43 @@ public class ParquetRowGroupReader : IDisposable {
 
         SchemaElement? se = _footer.GetSchemaElement(cc) ?? throw new ArgumentException("can't find schema element", nameof(cc));
 
-        ParquetPlainEncoder.TryDecode(st.MinValue, se, _options, out object? min);
-        ParquetPlainEncoder.TryDecode(st.MaxValue, se, _options, out object? max);
+        // The column order: TYPE_ORDER, unless the file says otherwise for this column.
+        ColumnSortOrder order = ColumnStatisticsRules.SortOrder(se);
+        List<ColumnOrder>? orders = _footer.ColumnOrders;
+        int ordinal = _rowGroup.Columns.IndexOf(cc);
+        if(orders != null && ordinal >= 0 && ordinal < orders.Count && orders[ordinal].TYPEORDER == null)
+            order = ColumnSortOrder.Unknown;
 
-        return new DataColumnStatistics(st.NullCount, st.DistinctCount, min, max);
+        byte[]? minBytes = null, maxBytes = null;
+        bool legacy = false;
+        if(order != ColumnSortOrder.Unknown) {
+            if(st.MinValue != null && st.MaxValue != null) {
+                (minBytes, maxBytes) = (st.MinValue, st.MaxValue);
+            } else if(st.Min != null && st.Max != null && order == ColumnSortOrder.Signed
+                && se.Type != Meta.Type.BYTE_ARRAY && se.Type != Meta.Type.FIXED_LEN_BYTE_ARRAY) {
+                // deprecated fields, compared signed whatever the type: right only for signed numeric columns
+                // (older parquet-mr compared byte arrays, decimals among them, as signed bytes; PARQUET-251, PARQUET-1065)
+                (minBytes, maxBytes) = (st.Min, st.Max);
+                legacy = true;
+            }
+        }
+
+        object? min = null, max = null;
+        if(minBytes != null && maxBytes != null) {
+            ParquetPlainEncoder.TryDecode(minBytes, se, _options, out min);
+            ParquetPlainEncoder.TryDecode(maxBytes, se, _options, out max);
+        }
+
+        return new DataColumnStatistics(st.NullCount, st.DistinctCount, min, max) {
+            MinBytes = minBytes,
+            MaxBytes = maxBytes,
+            SortOrder = order,
+            IsLegacyMinMax = legacy,
+            IsMinExact = st.IsMinValueExact,
+            IsMaxExact = st.IsMaxValueExact,
+            NanCount = st.NanCount,
+            PhysicalType = se.Type
+        };
     }
 
 
