@@ -47,6 +47,9 @@ public sealed class ColumnDescriptor {
     /// <summary>Highest repetition level.</summary>
     public int MaxRepetitionLevel { get; }
 
+    /// <summary>The order min/max statistics follow for this column's type.</summary>
+    public ColumnSortOrder SortOrder => ColumnStatisticsRules.SortOrder(SchemaElement);
+
     /// <inheritdoc/>
     public override string ToString() => $"{Path} ({PhysicalType}, DL {MaxDefinitionLevel}, RL {MaxRepetitionLevel})";
 
