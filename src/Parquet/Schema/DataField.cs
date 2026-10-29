@@ -211,6 +211,12 @@ public class DataField : Field, ICloneable {
         }
     }
 
+    /// <summary>
+    /// For byte array fields: store every value as exactly this many bytes, as FIXED_LEN_BYTE_ARRAY (for example
+    /// Iceberg's <c>fixed[n]</c>); null for variable-length BYTE_ARRAY. Set when reading such a column.
+    /// </summary>
+    public int? FixedLength { get; set; }
+
     internal bool IsCompatibleWith(Type structType) {
         return structType == ClrType ||
             (structType == typeof(ReadOnlyMemory<char>) && ClrType == typeof(string)) ||
