@@ -1,0 +1,176 @@
+name: Lake.Parquet sync
+
+# Rebases the change stack onto upstream's master, and moves master to the result only once the whole
+# Lake.Parquet build (lake.yml) passes on it. docs/maintaining.md, "Automatic: the daily sync", describes it.
+#
+# Moving master is a force-push, so this needs a token that may force-push master and push tags past
+# the branch rules: the LAKE_SYNC_TOKEN secret (a GitHub App token or fine-grained PAT with contents:
+# write, listed as a bypass actor on master's ruleset). The previous head is tagged first, so no
+# commit ever becomes unreachable.
+#
+# Actions are pinned to commit SHAs by hand, as in lake.yml.
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      onto:
+        description: "Upstream ref to rebase onto (a branch of aloneguid/parquet-dotnet, or a tag)"
+        required: false
+        default: master
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lake-sync
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    name: rebase
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # pushes lake/next
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      before: ${{ steps.sync.outputs.before }}
+      after: ${{ steps.sync.outputs.after }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.LAKE_SYNC_TOKEN || github.token }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: 10.0.x
+
+      # eng/lake/Lake.Stack does the work: rebase with fixups folded in, the report, the outputs
+      # (changed, before, after, upstream, conflict), and the push of a changed stack to lake/next.
+      - name: Rebase onto upstream
+        id: sync
+        env:
+          ONTO: ${{ inputs.onto || 'master' }}
+        run: |
+          set +e -uo pipefail   # keep going after a failed sync, to publish its report
+          git config user.name "lake-sync[bot]"
+          git config user.email "lake-sync@users.noreply.github.com"
+          git remote add upstream https://github.com/aloneguid/parquet-dotnet.git
+          git fetch --quiet upstream "+refs/heads/*:refs/remotes/upstream/*" --tags
+          onto="upstream/$ONTO"; git rev-parse --verify --quiet "$onto" >/dev/null || onto="$ONTO"
+          dotnet run --project eng/lake/Lake.Stack --configuration Release -- --upstream "$onto" \
+            sync --no-fetch --abort-on-conflict --publish origin \
+            --report "$RUNNER_TEMP/report.md" --outputs "$GITHUB_OUTPUT"
+          code=$?
+          cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY" || true
+          exit $code
+
+      - name: Keep the report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lake-sync-report
+          path: ${{ runner.temp }}/report.md
+          if-no-files-found: ignore
+
+  # The same build every push to master gets: stack rules, rename, build, the whole suite, pack.
+  verify:
+    name: verify
+    needs: [rebase]
+    if: needs.rebase.outputs.changed == 'true'
+    uses: ./.github/workflows/lake.yml
+    with:
+      ref: ${{ needs.rebase.outputs.after }}
+    # A called workflow may not ask for more than its caller grants, and lake.yml's publish job asks
+    # for these; it never runs when called (it needs lake.yml's own publish input).
+    permissions:
+      contents: write
+      id-token: write
+
+  promote:
+    name: promote
+    needs: [rebase, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.rebase.outputs.after }}
+          fetch-depth: 0
+          token: ${{ secrets.LAKE_SYNC_TOKEN || github.token }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/aloneguid/parquet-dotnet.git
+          git fetch --quiet upstream master
+
+      # Tags the old head lake/stack/<date>-<sha>, then moves master with a lease on the old head: if a
+      # pull request merged meanwhile, nothing moves and the next sync includes it.
+      - name: Tag the old head and move master
+        shell: bash # -eo pipefail, so the tee keeps a failure a failure
+        env:
+          BEFORE: ${{ needs.rebase.outputs.before }}
+          AFTER: ${{ needs.rebase.outputs.after }}
+        run: >-
+          dotnet run --project eng/lake/Lake.Stack --configuration Release --
+          promote --from "$BEFORE" --to "$AFTER" --remote origin --branch master
+          | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Each change's branch: upstream plus the change and what it needs. Retired ones are deleted.
+      - name: Rebuild the change branches
+        shell: bash # -eo pipefail, so the tee keeps a failure a failure
+        env:
+          AFTER: ${{ needs.rebase.outputs.after }}
+        run: >-
+          dotnet run --project eng/lake/Lake.Stack --configuration Release --
+          branches --head "$AFTER" --push origin
+          | tee -a "$GITHUB_STEP_SUMMARY"
+
+  report:
+    name: report
+    needs: [rebase, verify, promote]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Download the report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: lake-sync-report
+          path: .
+        continue-on-error: true
+
+      - name: Open or update the sync issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          { echo "The daily rebase onto upstream did not reach master: $RUN"; echo;
+            [ -f report.md ] && cat report.md || echo "The rebased stack is on \`lake/next\`; its build failed (see the run).";
+            echo; echo "docs/maintaining.md, \"By hand: when the sync stops\", says how to resolve it."; } > body.md
+          gh label create lake-sync --repo "$GITHUB_REPOSITORY" --color B60205 \
+            --description "The change stack could not be rebased onto upstream" 2>/dev/null || true
+          n=$(gh issue list --repo "$GITHUB_REPOSITORY" --label lake-sync --state open --json number --jq '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body-file body.md
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label lake-sync \
+              --title "Lake.Parquet sync: the stack does not rebase cleanly onto upstream" --body-file body.md
+          fi
