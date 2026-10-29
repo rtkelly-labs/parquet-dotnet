@@ -39,8 +39,11 @@ public class ParquetActor {
             throw new IOException($"not a parquet file, head: {head.ToHexString()}, tail: {tail.ToHexString()}");
     }
 
+    internal int LastFooterLength { get; private set; }
+
     internal async ValueTask<Parquet.Meta.FileMetaData> ReadMetadataAsync(CancellationToken cancellationToken = default) {
         int footerLength = await GoBeforeFooterAsync();
+        LastFooterLength = footerLength;
         byte[] footerData = await _fileStream.ReadBytesExactlyAsync(footerLength);
         using var ms = new MemoryStream(footerData);
         return Parquet.Meta.FileMetaData.Read(new Meta.Proto.ThriftCompactProtocolReader(ms));
