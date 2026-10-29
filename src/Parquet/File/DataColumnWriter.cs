@@ -139,6 +139,7 @@ class DataColumnWriter {
 
         // dictionary page
         if(wc.HasDictionary) {
+            chunk.MetaData!.DictionaryPageOffset = _stream.Position;
             PageHeader ph = _footer.CreateDictionaryPage(wc.Dictionary.Length, out _);
             r.Pages.Add(ph);
             using MemoryStream ms = _rmsMgr.GetStream();
@@ -150,6 +151,8 @@ class DataColumnWriter {
         using(MemoryStream ms = _rmsMgr.GetStream()) {
             bool deltaEncode = _options.GetEncodingHint(wc.Field) == EncodingHint.DeltaBinaryPacked && DeltaBinaryPackedEncoder.CanEncode(wc.Values);
             bool byteSplitStreamEncode = _options.GetEncodingHint(wc.Field) == EncodingHint.ByteSplitStream && ByteStreamSplitEncoder.IsSupported(typeof(T));
+
+            chunk.MetaData!.DataPageOffset = _stream.Position;
 
             // data page Num_values also does include NULLs
             PageHeader ph = _footer.CreateDataPage(wc.NumValues, wc.HasDictionary, deltaEncode, byteSplitStreamEncode, out DataPageHeader dph);
