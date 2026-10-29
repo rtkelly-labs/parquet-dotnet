@@ -32,6 +32,14 @@ public abstract class Field {
     public virtual bool IsNullable { get; internal set; } = false;
 
     /// <summary>
+    /// Parquet <c>field_id</c>, or -1 when the field has none. Table formats (Apache Iceberg, DuckLake, Delta column
+    /// mapping) identify columns by it rather than by name, on every field: data fields, structs, lists and maps.
+    /// Written when set, and read back from the file's schema.
+    /// See https://arrow.apache.org/docs/cpp/parquet.html#parquet-field-id
+    /// </summary>
+    public int FieldId { get; set; } = -1;
+
+    /// <summary>
     /// Max repetition level
     /// </summary>
     public int MaxRepetitionLevel { get; protected set; }
