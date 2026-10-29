@@ -97,6 +97,12 @@ public class ParquetOptions {
     /// </summary>
     public bool WriteStatistics { get; set; } = true;
 
+    /// <summary>
+    /// Check the magic bytes at the start of a file as well as at its end (default). Readers over ranged storage turn
+    /// this off to save a request for the first four bytes; the footer and its trailing magic are always checked.
+    /// </summary>
+    public bool ValidateHeaderMagic { get; set; } = true;
+
     internal Type DecimalType => UseBigDecimal ? typeof(BigDecimal) : typeof(decimal);
 
     /// <summary>

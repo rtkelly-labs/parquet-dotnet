@@ -371,4 +371,19 @@ public class ParquetReaderTest : TestBase {
 
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
+
+    [Fact]
+    public async Task Header_magic_check_can_be_skipped() {
+        var field = new DataField<int>("a");
+        var ms = new MemoryStream();
+        await using(ParquetWriter w = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms)) {
+            using ParquetRowGroupWriter rg = w.CreateRowGroup();
+            await rg.WriteAsync<int>(field, new[] { 1 });
+        }
+        byte[] bytes = ms.ToArray();
+        bytes[0] = (byte)'X';   // a damaged head: refused by default, ignored when not checked
+        await Assert.ThrowsAsync<IOException>(() => ParquetReader.CreateAsync(new MemoryStream(bytes)));
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(bytes), new ParquetOptions { ValidateHeaderMagic = false });
+        Assert.Equal(1, reader.RowGroups[0].RowCount);
+    }
 }
