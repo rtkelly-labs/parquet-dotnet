@@ -122,7 +122,10 @@ static class ParquetPlainEncoder {
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(ReadOnlyMemory<byte>)) {
             ReadOnlySpan<ReadOnlyMemory<byte>> span = sourceSpan.AsSpan<T, ReadOnlyMemory<byte>>();
-            Encode(span, destination);
+            if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY)
+                EncodeFixed(span, destination, tse);
+            else
+                Encode(span, destination);
             // byte-wise min/max is the order of byte arrays, but not of those holding decimals or INTERVAL
             if(Data.ColumnStatisticsRules.SortOrder(tse) == Data.ColumnSortOrder.Unsigned)
                 StatsCompute.Compute(span, stats);
@@ -355,6 +358,10 @@ static class ParquetPlainEncoder {
             }
         else if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY && tse.LogicalType?.UUID != null && value.Length == 16) {
             result = new Guid(value, bigEndian: true);  // the RFC 4122 bytes, as the values are written
+            return true;
+        }
+        else if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY && !tse.IsDecimal() && tse.LogicalType?.UUID == null) {
+            result = value;     // fixed[n] (and INTERVAL) as written
             return true;
         }
 
@@ -949,6 +956,16 @@ static class ParquetPlainEncoder {
         foreach(ReadOnlyMemory<byte> element in data) {
             byte[] l = BitConverter.GetBytes(element.Length);
             destination.Write(l, 0, l.Length);
+            destination.Write(element.Span);
+        }
+    }
+
+    /// <summary>FIXED_LEN_BYTE_ARRAY: the values back to back, no length prefix; each must be exactly the type length.</summary>
+    public static void EncodeFixed(ReadOnlySpan<ReadOnlyMemory<byte>> data, Stream destination, SchemaElement tse) {
+        int length = tse.TypeLength ?? throw new InvalidDataException($"type length must be set for {nameof(TType.FIXED_LEN_BYTE_ARRAY)}");
+        foreach(ReadOnlyMemory<byte> element in data) {
+            if(element.Length != length)
+                throw new ParquetException($"'{tse.Name}' is FIXED_LEN_BYTE_ARRAY({length}) but a value has {element.Length} bytes");
             destination.Write(element.Span);
         }
     }

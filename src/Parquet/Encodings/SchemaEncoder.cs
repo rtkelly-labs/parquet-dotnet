@@ -349,6 +349,8 @@ static class SchemaEncoder {
         df.IsNullable = isNullable;
         df.IsArray = isArray;
         df.SchemaElement = se;
+        if(se.Type == Type.FIXED_LEN_BYTE_ARRAY && systemType == typeof(byte[]))
+            df.FixedLength = se.TypeLength;
         return true;
     }
 
@@ -567,7 +569,11 @@ static class SchemaEncoder {
             tse.Precision = precision;
             tse.Scale = scale;
         } else if(st == typeof(byte[]) || st == typeof(ReadOnlyMemory<byte>)) {           // byte[]
-            tse.Type = Type.BYTE_ARRAY;
+            if(field.FixedLength is int fixedLength) {
+                tse.Type = Type.FIXED_LEN_BYTE_ARRAY;
+                tse.TypeLength = fixedLength;
+            } else
+                tse.Type = Type.BYTE_ARRAY;
         } else if(st == typeof(DateTime)) {                                               // DateTime
             if(field is DateTimeDataField dfDateTime) {
                 switch(dfDateTime.DateTimeFormat) {
