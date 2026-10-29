@@ -23,17 +23,3 @@ static class ColumnStatisticsRules {
         };
     }
 }
-
-/// <summary>
-/// How a column's values are ordered for statistics (parquet-format LogicalTypes.md, "Sort Order").
-/// </summary>
-enum ColumnSortOrder {
-    /// <summary>Signed comparison: numbers, dates, times, timestamps, decimals, booleans.</summary>
-    Signed,
-
-    /// <summary>Unsigned (byte-wise) comparison: strings and byte arrays, unsigned integers, UUIDs.</summary>
-    Unsigned,
-
-    /// <summary>No defined order (INT96, INTERVAL, or a column order the reader does not know): min and max are not usable.</summary>
-    Unknown,
-}
