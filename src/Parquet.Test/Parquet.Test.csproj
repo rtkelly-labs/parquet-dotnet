@@ -16,6 +16,8 @@
 
     <ItemGroup>
         <PackageReference Include="CsvHelper" Version="33.1.0" />
+        <!-- parquet-cpp, for interop tests in both directions -->
+        <PackageReference Include="ParquetSharp" Version="25.0.1.1" />
         <PackageReference Include="System.ValueTuple" Version="4.6.2" />
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
         <PackageReference Include="xunit" Version="2.9.3" />
