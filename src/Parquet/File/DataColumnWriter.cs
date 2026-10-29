@@ -54,7 +54,7 @@ class DataColumnWriter {
         chunk.MetaData.Encodings = metrics.GetUsedEncodings();
 
         //generate stats for column chunk
-        chunk.MetaData.Statistics = wc.Statistics.ToThriftStatistics(_schemaElement);
+        chunk.MetaData.Statistics = _options.WriteStatistics ? wc.Statistics.ToThriftStatistics(_schemaElement) : null;
 
         //the following counters must include both data size and header size
         chunk.MetaData.TotalCompressedSize = metrics.CompressedSize;
@@ -180,7 +180,7 @@ class DataColumnWriter {
                 }
             }
 
-            dph.Statistics = wc.Statistics.ToThriftStatistics(tse);
+            dph.Statistics = _options.WriteStatistics ? wc.Statistics.ToThriftStatistics(tse) : null;
             await CompressAndWriteAsync(ph, ms, r, cancellationToken);
         }
 
