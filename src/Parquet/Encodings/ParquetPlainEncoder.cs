@@ -309,11 +309,26 @@ static class ParquetPlainEncoder {
             result = BitConverter.ToBoolean(value, 0);
             return true;
         }
+        // before INT32 and INT64, which decimals can be stored as
+        if(tse.IsDecimal()) {
+            result = TryDecodeDecimal(value, tse);
+            return true;
+        }
         if(tse.Type == TType.INT32) {
-            result = BitConverter.ToInt32(value, 0);
+            int i = BitConverter.ToInt32(value, 0);
+            // narrower and unsigned integers as the column's CLR type (see SchemaEncoder.GetSystemType)
+            result = IntegerBits(tse) switch {
+                (8, true) => (sbyte)i,
+                (8, false) => (byte)i,
+                (16, true) => (short)i,
+                (16, false) => (ushort)i,
+                (32, false) => (uint)i,
+                _ => i
+            };
             return true;
         } else if(tse.Type == TType.INT64) {
-            result = BitConverter.ToInt64(value, 0);
+            long l = BitConverter.ToInt64(value, 0);
+            result = IntegerBits(tse) is (64, false) ? (ulong)l : l;
             return true;
         } else if(tse.Type == TType.INT96) {
             if(value.Length == 12)
@@ -323,9 +338,6 @@ static class ParquetPlainEncoder {
                     result = new BigInteger(value);
             else
                 result = null;
-            return true;
-        } else if(tse.IsDecimal()) {
-            result = TryDecodeDecimal(value, tse);
             return true;
         } else if(tse.Type == TType.DOUBLE) {
             result = BitConverter.ToDouble(value, 0);
@@ -348,6 +360,20 @@ static class ParquetPlainEncoder {
 
         result = null;
         return false;
+    }
+
+    private static (int bits, bool signed)? IntegerBits(SchemaElement tse) {
+        if(tse.LogicalType?.INTEGER is IntType it)
+            return (it.BitWidth, it.IsSigned);
+        return tse.ConvertedType switch {
+            ConvertedType.INT_8 => (8, true),
+            ConvertedType.UINT_8 => (8, false),
+            ConvertedType.INT_16 => (16, true),
+            ConvertedType.UINT_16 => (16, false),
+            ConvertedType.UINT_32 => (32, false),
+            ConvertedType.UINT_64 => (64, false),
+            _ => null
+        };
     }
 
     private static object TryDecodeDecimal(byte[] value, SchemaElement tse) {
