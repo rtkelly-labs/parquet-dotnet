@@ -103,6 +103,8 @@ class ThriftFooter {
         return ms.Length;
     }
 
+    internal FileMetaData Meta => _fileMeta;
+
     /// <summary>Sort order of each leaf column, in schema order, when the writer recorded them.</summary>
     public List<ColumnOrder>? ColumnOrders => _fileMeta.ColumnOrders;
 

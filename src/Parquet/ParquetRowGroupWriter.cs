@@ -25,11 +25,17 @@ public class ParquetRowGroupWriter : IDisposable {
     private readonly RowGroup _thriftRowGroup;
     private readonly SchemaElement[] _thschema;
     private int _colIdx;
+    private readonly Encryption.FileEncryptor? _encryptor;
+    private readonly int _ordinal;
 
     internal ParquetRowGroupWriter(
        Stream stream,
        ThriftFooter footer,
-       ParquetOptions options) {
+       ParquetOptions options,
+       Encryption.FileEncryptor? encryptor = null,
+       int ordinal = 0) {
+        _encryptor = encryptor;
+        _ordinal = ordinal;
         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
         _footer = footer ?? throw new ArgumentNullException(nameof(footer));
         _options = options;
@@ -215,7 +221,8 @@ public class ParquetRowGroupWriter : IDisposable {
 
         FieldPath path = _footer.GetPath(tse);
 
-        var writer = new DataColumnWriter(_stream, _footer, tse, _options, customMetadata);
+        var writer = new DataColumnWriter(_stream, _footer, tse, _options, customMetadata,
+            _encryptor?.ForColumn(path.ToList(), _ordinal, _colIdx - 1));
 
         if(RowCount == null) {
             RowCount = wc.CalculateRowCount();
