@@ -370,8 +370,12 @@ static class ParquetPlainEncoder {
                 result = BitConverter.GetBytes(days);
                 return true;
             case TType.INT64:
-                long unixTime = value.ToUtc().ToUnixMilliseconds();
-                result = BitConverter.GetBytes(unixTime);
+                // In the column's unit, exactly as Encode(ReadOnlySpan<DateTime>) writes its values: statistics in
+                // another unit make readers prune row groups that hold matching rows.
+                using(var ms = new MemoryStream()) {
+                    Encode(new ReadOnlySpan<DateTime>(new[] { value }), ms, tse);
+                    result = ms.ToArray();
+                }
                 return true;
             case TType.INT96:
                 var nano = new NanoTime(value.ToUtc());
