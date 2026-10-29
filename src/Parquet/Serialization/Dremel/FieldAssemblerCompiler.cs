@@ -339,13 +339,17 @@ class FieldAssemblerCompiler<TClass> {
 
     private static void GetReadLevels(Field f, out int dlDepth, out int rlDepth) {
         if(f is ListField lf && lf.Item.IsAtomic) {
-            dlDepth = lf.Item.MaxDefinitionLevel;
+            // the level at which an element exists; a nullable element is one level deeper when it has a value
+            dlDepth = ElementLevel(lf);
             rlDepth = lf.Item.MaxRepetitionLevel;
         } else {
             dlDepth = f.MaxDefinitionLevel;
             rlDepth = f.MaxRepetitionLevel;
         }
     }
+
+    private static int ElementLevel(ListField lf) =>
+        lf.Item.MaxDefinitionLevel - (lf.Item is DataField { IsNullable: true, IsArray: false } ? 1 : 0);
 
     private static Type GetIdealUntypedType(Field f) {
         switch(f.SchemaType) {
@@ -495,6 +499,20 @@ class FieldAssemblerCompiler<TClass> {
     }
 
 
+    /// <summary>
+    /// The current value as a collection element: null (default) for a null element of a list of nullable items,
+    /// whose definition level stops one short of the item's.
+    /// </summary>
+    private Expression ElementValue(Field schemaField, Type elementType) {
+        Expression value = DataConverter.Convert(_dataElementVar, _dataElementVar.Type, elementType);
+        if(schemaField is ListField lf && ElementLevel(lf) < lf.Item.MaxDefinitionLevel)
+            return Expression.Condition(
+                Expression.Equal(_dlVar, Expression.Constant(lf.Item.MaxDefinitionLevel)),
+                value,
+                Expression.Default(elementType));
+        return value;
+    }
+
     private Expression AssembleRecord(
         Expression rootVar, Type rootType, Field? parentField,
         IReadOnlyCollection<Field> schemaPath) {
@@ -538,12 +556,12 @@ class FieldAssemblerCompiler<TClass> {
                     // add element to array
                     leafExpr = Expression.Assign(
                         currentVar,
-                        RebuildArray(currentVar, currentVarType, DataConverter.Convert(_dataElementVar, _dataElementVar.Type, collectionElementType)));
+                        RebuildArray(currentVar, currentVarType, ElementValue(schemaField, collectionElementType)));
                 } else {
                     // add element to collection - end here
                     leafExpr = Expression.Call(Expression.Convert(currentVar, currentVarType),
                         currentVarType.GetMethod(nameof(IList.Add))!,
-                        DataConverter.Convert(_dataElementVar, _dataElementVar.Type, collectionElementType));
+                        ElementValue(schemaField, collectionElementType));
                 }
 
 #if DEBUG
