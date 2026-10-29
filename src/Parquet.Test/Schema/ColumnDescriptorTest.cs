@@ -37,6 +37,8 @@ public class ColumnDescriptorTest {
         Assert.Equal(Meta.Type.BYTE_ARRAY, columns[2].PhysicalType);
         Assert.NotNull(columns[2].LogicalType?.STRING);
         Assert.Equal(new FieldPath("tags", "list", "element"), columns[3].Path);
+        Assert.Equal(new[] { Parquet.Data.ColumnSortOrder.Signed, Parquet.Data.ColumnSortOrder.Unsigned, Parquet.Data.ColumnSortOrder.Unsigned, Parquet.Data.ColumnSortOrder.Signed },
+            columns.Select(c => c.SortOrder));
 
         // levels and paths as the model schema has them
         DataField[] model = reader.Schema.GetDataFields();
