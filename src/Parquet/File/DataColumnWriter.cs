@@ -175,6 +175,8 @@ class DataColumnWriter {
                     DeltaBinaryPackedEncoder.Encode(wc.Values, ms, wc.Statistics);
                 } else if(byteSplitStreamEncode) {
                     ByteStreamSplitEncoder.Encode(wc.Values, ms);
+                    // the statistics the plain encoder computes; writing to Stream.Null costs nothing
+                    ParquetPlainEncoder.Encode(wc.Values, Stream.Null, tse, wc.Statistics);
                 } else {
                     ParquetPlainEncoder.Encode(wc.Values,
                         ms,
