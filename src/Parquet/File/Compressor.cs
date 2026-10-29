@@ -199,16 +199,27 @@ class DefaultCompressor : ICompressor {
         return owner;
     }
 
+    [ThreadStatic]
+    private static ZstdSharp.Decompressor? _zstdDecompressor;
+
     private async ValueTask<IMemoryOwner<byte>> ZstdDecompress(Stream source, int destinationLength) {
-        using var decompressor = new ZstdSharp.Decompressor();
-        byte[] compressed = source.ToByteArray()!;
-        // Do not pass destinationLength as maxDecompressedSize — some Parquet files report an incorrect
-        // UncompressedPageSize in their metadata. Instead, let ZstdSharp read the actual content size
-        // that is embedded in the Zstd frame header, which is always accurate.
-        Span<byte> decompressed = decompressor.Unwrap(compressed);
-        var owner = MemoryOwner<byte>.Allocate(decompressed.Length);
-        decompressed.CopyTo(owner.Span);
-        return owner;
+        using MemoryOwner<byte> compressed = MemoryOwner<byte>.Allocate((int)(source.Length - source.Position));
+        await source.ReadExactlyAsync(compressed.Memory);
+        // taken after the await: the continuation may run on another thread, whose decompressor this one must not share
+        ZstdSharp.Decompressor decompressor = _zstdDecompressor ??= new ZstdSharp.Decompressor();
+        // Do not trust destinationLength — some Parquet files report an incorrect UncompressedPageSize in their
+        // metadata. The content size in the Zstd frame header is accurate: decompress straight into a buffer of
+        // that size, falling back to letting ZstdSharp size the output when the header has none.
+        ulong size = ZstdSharp.Decompressor.GetDecompressedSize(compressed.Span);
+        if(size > 0 && size <= int.MaxValue) {
+            MemoryOwner<byte> owner = MemoryOwner<byte>.Allocate((int)size);
+            int written = decompressor.Unwrap(compressed.Span, owner.Span);
+            return written == owner.Length ? owner : owner.Slice(0, written);
+        }
+        Span<byte> decompressed = decompressor.Unwrap(compressed.Span);
+        var result = MemoryOwner<byte>.Allocate(decompressed.Length);
+        decompressed.CopyTo(result.Span);
+        return result;
     }
 
     // "LZ4" compression, requires K4os.Compression.LZ4 NuGet package
