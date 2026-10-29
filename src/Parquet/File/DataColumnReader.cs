@@ -171,46 +171,43 @@ class DataColumnReader {
         await using(Stream src = _inputStream.Sub(_inputStream.Position, ph.CompressedPageSize)) {
             await src.CopyToAsync(pageMemory.Memory, cancellationToken);
         }
-        int dataUsed = 0;
+        // v2 pages: repetition then definition levels (RLE, uncompressed, without a length prefix: the lengths are
+        // in the header), then the values, which alone are compressed
+        int repLength = ph.DataPageHeaderV2.RepetitionLevelsByteLength;
+        int defLength = ph.DataPageHeaderV2.DefinitionLevelsByteLength;
+        int dataUsed = repLength + defLength;
 
         if(_dataField.MaxRepetitionLevel > 0) {
-            int levelsRead = ReadLevels(pageMemory.Span,
+            int levelsRead = ReadLevels(pageMemory.Span.Slice(0, repLength),
                 _dataField.MaxRepetitionLevel, rc.RepetitionLevelsToReadInto,
-                ph.DataPageHeaderV2.NumValues, ph.DataPageHeaderV2.RepetitionLevelsByteLength, out int usedLength);
-            dataUsed += usedLength;
+                ph.DataPageHeaderV2.NumValues, repLength, out _);
             rc.MarkRepetitionLevels(levelsRead);
-
-            throw new NotImplementedException();
         }
 
+        int nulls = 0;
         if(_dataField.MaxDefinitionLevel > 0) {
             int levelsRead = ReadLevels(
-                pageMemory.Memory.Span.Slice(dataUsed), _dataField.MaxDefinitionLevel,
+                pageMemory.Span.Slice(repLength, defLength), _dataField.MaxDefinitionLevel,
                 rc.DefinitionLevelsToReadInto,
-                ph.DataPageHeaderV2.NumValues, ph.DataPageHeaderV2.DefinitionLevelsByteLength, out int usedLength);
-            dataUsed += usedLength;
-            rc.MarkDefinitionLevels(levelsRead, _dataField.MaxDefinitionLevel);
+                ph.DataPageHeaderV2.NumValues, defLength, out _);
+            nulls = rc.MarkDefinitionLevels(levelsRead, _dataField.MaxDefinitionLevel);
         }
 
-        int maxReadCount = ph.DataPageHeaderV2.NumValues - ph.DataPageHeaderV2.NumNulls;
+        // values present: NumNulls counts every level below the maximum (empty and null lists too)
+        int maxReadCount = ph.DataPageHeaderV2.NumValues - (_dataField.MaxDefinitionLevel > 0 ? nulls : ph.DataPageHeaderV2.NumNulls);
 
         if(ph.DataPageHeaderV2.IsCompressed == false || _thriftColumnChunk.MetaData!.Codec == CompressionCodec.UNCOMPRESSED) {
             ReadColumn(pageMemory.Span.Slice(dataUsed), ph.DataPageHeaderV2.Encoding, maxValues, maxReadCount, rc);
             return;
         }
 
-        int dataSize = ph.CompressedPageSize - ph.DataPageHeaderV2.RepetitionLevelsByteLength -
-                       ph.DataPageHeaderV2.DefinitionLevelsByteLength;
-
-        int decompressedSize = ph.UncompressedPageSize - ph.DataPageHeaderV2.RepetitionLevelsByteLength -
-                               ph.DataPageHeaderV2.DefinitionLevelsByteLength;
-
+        int decompressedSize = ph.UncompressedPageSize - repLength - defLength;
 
         // decompress into rented memory
         using IMemoryOwner<byte> decompressedDataMemory = await Compressor.Instance.Decompress(
             _compressionMethod,
             pageMemory.Memory.Sub(dataUsed, pageMemory.Length - dataUsed),
-            ph.UncompressedPageSize);
+            decompressedSize);
 
         ReadColumn(decompressedDataMemory.Memory.Span,
             ph.DataPageHeaderV2.Encoding,
