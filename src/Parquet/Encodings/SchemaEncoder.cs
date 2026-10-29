@@ -408,7 +408,7 @@ static class SchemaEncoder {
             ConvertedType = ConvertedType.MAP,
             LogicalType = new LogicalType { MAP = new MapType() },
             NumChildren = 1,
-            RepetitionType = FieldRepetitionType.OPTIONAL
+            RepetitionType = mapField.IsNullable ? FieldRepetitionType.OPTIONAL : FieldRepetitionType.REQUIRED
         };
         container.Add(root);
 
