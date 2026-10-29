@@ -20,6 +20,8 @@ class DataColumnWriter {
     private readonly SchemaElement _schemaElement;
     private readonly Dictionary<string, string>? _keyValueMetadata;
     private readonly ParquetOptions _options;
+    private readonly Encryption.ColumnEncryptor? _encryptor;
+    private int _dataPageOrdinal;
     private static readonly RecyclableMemoryStreamManager _rmsMgr = new RecyclableMemoryStreamManager();
 
     public DataColumnWriter(
@@ -27,7 +29,9 @@ class DataColumnWriter {
        ThriftFooter footer,
        SchemaElement schemaElement,
        ParquetOptions options,
-       Dictionary<string, string>? keyValueMetadata) {
+       Dictionary<string, string>? keyValueMetadata,
+       Encryption.ColumnEncryptor? encryptor = null) {
+        _encryptor = encryptor;
         _stream = stream;
         _footer = footer;
         _schemaElement = schemaElement;
@@ -93,29 +97,42 @@ class DataColumnWriter {
         CancellationToken cancellationToken) {
 
         int uncompressedLength = (int)uncompressedData.Length;
-        using IMemoryOwner<byte> pageData = await Compressor.Instance.CompressAsync(
+        using IMemoryOwner<byte> compressed = await Compressor.Instance.CompressAsync(
             _options.CompressionMethod, _options.CompressionLevel, uncompressedData);
-        int compressedLength = pageData.Memory.Length;
+
+        // encrypted: the page and its header are each a module, and the page size is the module's
+        bool dictionary = ph.Type == PageType.DICTIONARY_PAGE;
+        int pageOrdinal = dictionary ? -1 : _dataPageOrdinal++;
+        ReadOnlyMemory<byte> pageData = _encryptor == null
+            ? compressed.Memory
+            : _encryptor.Page(compressed.Memory.Span, dictionary, pageOrdinal);
 
         ph.UncompressedPageSize = uncompressedLength;
-        ph.CompressedPageSize = compressedLength;
+        ph.CompressedPageSize = pageData.Length;
 
         //write the header in
         using(MemoryStream headerMs = _rmsMgr.GetStream()) {
             ph.Write(new Meta.Proto.ThriftCompactProtocolWriter(headerMs));
-            int headerSize = (int)headerMs.Length;
-            headerMs.Position = 0;
             _stream.Flush();
 
             // write header
-            await headerMs.CopyToAsync(_stream);
+            int headerSize;
+            if(_encryptor == null) {
+                headerSize = (int)headerMs.Length;
+                headerMs.Position = 0;
+                await headerMs.CopyToAsync(_stream);
+            } else {
+                byte[] header = _encryptor.Header(headerMs.GetBuffer().AsSpan(0, (int)headerMs.Length), dictionary, pageOrdinal);
+                headerSize = header.Length;
+                await _stream.WriteAsync(header, 0, header.Length, cancellationToken);
+            }
 
             cs.CompressedSize += headerSize;
             cs.UncompressedSize += headerSize;
         }
 
         // write data
-        await pageData.Memory.CopyToAsync(_stream);
+        await _stream.WriteAsync(pageData, cancellationToken);
 
         cs.CompressedSize += ph.CompressedPageSize;
         cs.UncompressedSize += ph.UncompressedPageSize;

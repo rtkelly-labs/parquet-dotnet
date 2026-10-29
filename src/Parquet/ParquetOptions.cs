@@ -103,6 +103,14 @@ public class ParquetOptions {
     /// </summary>
     public bool ValidateHeaderMagic { get; set; } = true;
 
+    /// <summary>
+    /// Write files with Parquet modular encryption (AES-GCM) using these keys. Not supported when appending.
+    /// </summary>
+    public Encryption.ParquetEncryptionOptions? Encryption { get; set; }
+
+    /// <summary>Keys for reading files with Parquet modular encryption.</summary>
+    public Encryption.ParquetDecryptionOptions? Decryption { get; set; }
+
     internal Type DecimalType => UseBigDecimal ? typeof(BigDecimal) : typeof(decimal);
 
     /// <summary>
