@@ -85,7 +85,8 @@ class WritingColumn<T> : IDisposable where T : struct {
         bool typeCompatible =
             field.ClrType == typeof(T) ||
             (field.ClrType == typeof(string) && typeof(T) == typeof(ReadOnlyMemory<char>)) ||
-            (field.ClrType == typeof(byte[]) && typeof(T) == typeof(ReadOnlyMemory<byte>));
+            (field.ClrType == typeof(byte[]) && typeof(T) == typeof(ReadOnlyMemory<byte>)) ||
+            typeof(T) == field.PhysicalClrType;   // stored values as they are (see DataField.PhysicalClrType)
 
         if(!typeCompatible) {
             throw new ArgumentException($"expected values of type {field.ClrType} but passed {typeof(T)}");

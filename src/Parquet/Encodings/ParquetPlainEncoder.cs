@@ -63,7 +63,10 @@ static class ParquetPlainEncoder {
         } else if(t == typeof(int)) {
             ReadOnlySpan<int> span = sourceSpan.AsSpan<T, int>();
             Encode(span, destination);
-            StatsCompute.Compute(span, stats);
+            if(Data.ColumnStatisticsRules.SortOrder(tse) == Data.ColumnSortOrder.Unsigned)
+                StatsCompute.ComputeUnsigned(span, stats);  // unsigned values passed as their bits
+            else
+                StatsCompute.Compute(span, stats);
         } else if(t == typeof(uint)) {
             ReadOnlySpan<uint> span = sourceSpan.AsSpan<T, uint>();
             Encode(span, destination);
@@ -71,7 +74,10 @@ static class ParquetPlainEncoder {
         } else if(t == typeof(long)) {
             ReadOnlySpan<long> span = sourceSpan.AsSpan<T, long>();
             Encode(span, destination);
-            StatsCompute.Compute(span, stats);
+            if(Data.ColumnStatisticsRules.SortOrder(tse) == Data.ColumnSortOrder.Unsigned)
+                StatsCompute.ComputeUnsigned(span, stats);
+            else
+                StatsCompute.Compute(span, stats);
         } else if(t == typeof(ulong)) {
             ReadOnlySpan<ulong> span = sourceSpan.AsSpan<T, ulong>();
             Encode(span, destination);
