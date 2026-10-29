@@ -103,6 +103,9 @@ class ThriftFooter {
         return ms.Length;
     }
 
+    /// <summary>Sort order of each leaf column, in schema order, when the writer recorded them.</summary>
+    public List<ColumnOrder>? ColumnOrders => _fileMeta.ColumnOrders;
+
     public SchemaElement? GetSchemaElement(ColumnChunk columnChunk) {
         if(columnChunk == null) {
             throw new ArgumentNullException(nameof(columnChunk));
