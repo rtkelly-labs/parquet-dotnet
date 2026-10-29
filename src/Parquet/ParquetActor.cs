@@ -28,12 +28,15 @@ public class ParquetActor {
     /// </summary>
     /// <returns></returns>
     /// <exception cref="IOException"></exception>
-    protected async Task ValidateFileAsync() {
-        _fileStream.Seek(0, SeekOrigin.Begin);
-        byte[] head = await _fileStream.ReadBytesExactlyAsync(4);
-
+    protected async Task ValidateFileAsync(bool checkHead = true) {
         _fileStream.Seek(-4, SeekOrigin.End);
         byte[] tail = await _fileStream.ReadBytesExactlyAsync(4);
+
+        byte[] head = tail;     // the head is not read when not checked
+        if(checkHead) {
+            _fileStream.Seek(0, SeekOrigin.Begin);
+            head = await _fileStream.ReadBytesExactlyAsync(4);
+        }
 
         if(!MagicBytes.SequenceEqual(head) || !MagicBytes.SequenceEqual(tail))
             throw new IOException($"not a parquet file, head: {head.ToHexString()}, tail: {tail.ToHexString()}");
