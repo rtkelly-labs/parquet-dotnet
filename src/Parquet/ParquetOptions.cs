@@ -91,6 +91,12 @@ public class ParquetOptions {
     /// </summary>
     public bool UseBigDecimal { get; set; } = false;
 
+    /// <summary>
+    /// Write min/max/null-count statistics in column chunk metadata and data page headers (the default). Files whose
+    /// statistics are never used for pruning (position delete files, for instance) can leave them out.
+    /// </summary>
+    public bool WriteStatistics { get; set; } = true;
+
     internal Type DecimalType => UseBigDecimal ? typeof(BigDecimal) : typeof(decimal);
 
     /// <summary>
