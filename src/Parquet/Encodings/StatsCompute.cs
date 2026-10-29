@@ -289,11 +289,20 @@ static class StatsCompute {
         int minIdx = 0;
         int maxIdx = 0;
 
+        // UUIDs compare as their RFC 4122 (big-endian) bytes, unsigned; Guid.CompareTo orders differently
+        Span<byte> cur = stackalloc byte[16], lo = stackalloc byte[16], hi = stackalloc byte[16];
+        data[0].TryWriteBytes(lo, bigEndian: true, out _);
+        data[0].TryWriteBytes(hi, bigEndian: true, out _);
         for(int i = 1; i < data.Length; i++) {
-            if(data[i].CompareTo(data[minIdx]) < 0)
+            data[i].TryWriteBytes(cur, bigEndian: true, out _);
+            if(cur.SequenceCompareTo(lo) < 0) {
                 minIdx = i;
-            if(data[i].CompareTo(data[maxIdx]) > 0)
+                cur.CopyTo(lo);
+            }
+            if(cur.SequenceCompareTo(hi) > 0) {
                 maxIdx = i;
+                cur.CopyTo(hi);
+            }
         }
 
         stats.MinValue = data[minIdx];
