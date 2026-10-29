@@ -26,12 +26,19 @@ public class ParquetRowGroupReader : IDisposable {
     private readonly Stream _stream;
     private readonly ParquetOptions? _options;
     private readonly Dictionary<FieldPath, ColumnChunk> _pathToChunk = new();
+    private readonly Encryption.FileDecryptor? _decryptor;
+    private readonly HashSet<FieldPath> _hidden = new();
+    private readonly int _ordinal;
 
     internal ParquetRowGroupReader(
        RowGroup rowGroup,
        ThriftFooter footer,
        Stream stream,
-       ParquetOptions? parquetOptions) {
+       ParquetOptions? parquetOptions,
+       Encryption.FileDecryptor? decryptor = null,
+       int ordinal = 0) {
+        _decryptor = decryptor;
+        _ordinal = ordinal;
         _rowGroup = rowGroup ?? throw new ArgumentNullException(nameof(rowGroup));
         _footer = footer ?? throw new ArgumentNullException(nameof(footer));
         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
@@ -39,6 +46,12 @@ public class ParquetRowGroupReader : IDisposable {
 
         //cache chunks
         foreach(ColumnChunk hunk in _rowGroup.Columns) {
+            // an encrypted column this reader has no key for has no metadata: it is not readable
+            if(hunk.MetaData == null) {
+                if(hunk.CryptoMetadata?.ENCRYPTIONWITHCOLUMNKEY?.PathInSchema is { } hidden)
+                    _hidden.Add(new FieldPath(hidden));
+                continue;
+            }
             FieldPath path = hunk.GetPath();
             _pathToChunk[path] = hunk;
         }
@@ -67,7 +80,9 @@ public class ParquetRowGroupReader : IDisposable {
 
     private ColumnMetaData GetColumnMetaData(DataField field) {
         ColumnChunk columnChunk = GetMetadata(field)
-            ?? throw new ParquetException($"'{field.Path}' does not exist in this file");
+            ?? throw new ParquetException(_hidden.Contains(field.Path)
+                ? $"'{field.Path}' is encrypted and no key was given for it"
+                : $"'{field.Path}' does not exist in this file");
         if(columnChunk.MetaData == null)
             throw new ParquetException($"Column chunk metadata is missing for '{field.Path}', meaning the file is most probably corrupt");
         return columnChunk.MetaData;
@@ -112,7 +127,8 @@ public class ParquetRowGroupReader : IDisposable {
             throw new ArgumentException($"Repetition levels buffer is too small for field '{field.Path}' (length {repetitionLevels.Value.Length} < numValues {RowCount})");
 
         var columnReader = new DataColumnReader(field, _stream,
-            columnChunk, ReadColumnStatistics(columnChunk), _footer, _options);
+            columnChunk, ReadColumnStatistics(columnChunk), _footer, _options,
+            _decryptor?.ForColumn(columnChunk, _ordinal, _rowGroup.Columns.IndexOf(columnChunk)));
 
         using var rc = new ReadingColumn<T>(field, values, definitionLevels, repetitionLevels);
         await columnReader.ReadAsync(rc, cancellationToken);
