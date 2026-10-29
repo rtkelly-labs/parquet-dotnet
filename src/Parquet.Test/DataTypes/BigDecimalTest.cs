@@ -85,7 +85,7 @@ public class BigDecimalTest {
         byte[] bytes = bd.GetBytes();
 
         // GetBytes returns big-endian; reverse to little-endian for BigInteger
-        byte[] littleEndian = bytes.Reverse().ToArray();
+        byte[] littleEndian = Enumerable.Reverse(bytes).ToArray();
         BigInteger decoded = new BigInteger(littleEndian);
         Assert.Equal(unscaled, decoded);
     }
