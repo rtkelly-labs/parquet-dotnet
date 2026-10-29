@@ -45,6 +45,9 @@ public class DataColumnStatistics {
     /// </summary>
     public object? MaxValue { get; internal set; }
 
+    /// <summary>Number of NaN values (floating point columns only), written as nan_count.</summary>
+    internal long? NanCount { get; set; }
+
     internal Statistics ToThriftStatistics(SchemaElement tse) {
 
         if(!ParquetPlainEncoder.TryEncode(MinValue, tse, out byte[]? min)) {
@@ -55,12 +58,16 @@ public class DataColumnStatistics {
             throw new ArgumentException($"could not encode {MinValue}", nameof(MinValue));
         }
 
+        // The deprecated min/max are compared signed by the readers that use them: like parquet-cpp, written only for
+        // columns whose order is signed (not strings, byte arrays or unsigned integers).
+        bool legacy = ColumnStatisticsRules.SortOrder(tse) == ColumnSortOrder.Signed;
         return new Statistics {
             NullCount = NullCount,
             DistinctCount = DistinctCount,
-            Min = min,
+            NanCount = NanCount,
+            Min = legacy ? min : null,
             MinValue = min,
-            Max = max,
+            Max = legacy ? max : null,
             MaxValue = max
         };
     }
