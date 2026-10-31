@@ -167,6 +167,9 @@ static class Api {
     /// as on the JIT (and so a field of an enum type, whose nullable type native AOT does not construct, is never used).
     /// </summary>
     static async Task EnumsRefusedAsync() {
+        // the field itself works, its nullable type included (constructed natively too)
+        var nullable = new DataField<Colour>("n", nullable: true);
+        Check(nullable.ClrNullableIfHasNullsType == typeof(Colour?), $"enum field: nullable type {nullable.ClrNullableIfHasNullsType}");
         var field = new DataField<Colour>("c");
         try {
             await WriteAsync(new ParquetSchema(field), new ParquetOptions(), rg => rg.WriteAsync<Colour>(field, new[] { Colour.Red }));

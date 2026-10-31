@@ -16,6 +16,8 @@ name: Lake.Parquet
 on:
   pull_request:
     branches: [master]
+    # labeled: adding the macos label runs the macOS leg of the aot job (below)
+    types: [opened, synchronize, reopened, labeled]
   push:
     # staging/*: a rebaselined stack, built here before it may replace master (Lake.NET docs/lake-parquet/maintaining.md).
     branches: [master, "staging/**"]
@@ -28,6 +30,11 @@ on:
         type: string
       verify_changes:
         description: "Verify every change alone (lake-stack verify), as on staging branches"
+        required: false
+        default: false
+        type: boolean
+      macos:
+        description: "Also run the aot job on macOS (arm64); macOS runners cost ten times Linux ones"
         required: false
         default: false
         type: boolean
@@ -206,19 +213,14 @@ jobs:
   # Generated cases, both directions, against parquet-cpp (Lake.NET docs/lake-parquet/testing.md, "The conformance harness").
   # Lake.Parquet under native AOT (Lake.NET docs/lake-parquet/testing.md, "Native AOT"): the package as published
   # (members stripped, renamed, IsAotCompatible), with the regression suite published by PublishAot, every trimming
-  # and AOT warning an error, then checked against the same suite on the JIT, on Linux, Windows and macOS (arm64).
+  # and AOT warning an error, then checked against the same suite on the JIT, on Linux and Windows. macOS (arm64)
+  # runners are expensive, so that leg runs only on a pull request labelled macos or a run dispatched with macos.
   aot:
     name: aot (${{ matrix.rid }})
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            rid: linux-x64
-          - os: windows-latest
-            rid: win-x64
-          - os: macos-latest
-            rid: osx-arm64
+        include: ${{ fromJSON(((github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'macos')) || inputs.macos) && '[{"os":"ubuntu-latest","rid":"linux-x64"},{"os":"windows-latest","rid":"win-x64"},{"os":"macos-latest","rid":"osx-arm64"}]' || '[{"os":"ubuntu-latest","rid":"linux-x64"},{"os":"windows-latest","rid":"win-x64"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:
@@ -283,6 +285,19 @@ jobs:
           "$native" corpus "$corpus" > "$out/native-corpus.txt"
           diff --strip-trailing-cr "$out/jit-corpus.txt" "$out/native-corpus.txt"
           echo "$(wc -l < "$out/native-corpus.txt") corpus files decoded alike"
+
+      # parquet-cpp, an independent implementation, reads every file the native build wrote and decrypts the encrypted
+      # ones: what proves native encryption, whose random nonces rule out comparing bytes
+      - name: Check the native build's files with parquet-cpp
+        working-directory: ${{ runner.temp }}/lake
+        env:
+          LAKE_CONFORMANCE_FILES: ${{ runner.temp }}/aot-results/native-files
+          LAKE_CONFORMANCE_CASES: "1000"
+        run: >-
+          dotnet test eng/lake/Lake.Parquet.Conformance --configuration Release --framework net10.0
+          --filter "FullyQualifiedName~Files_written_by_another_build"
+          -p:CustomBeforeMicrosoftCommonTargets="$GITHUB_WORKSPACE/eng/lake/Lake.Parquet.targets"
+          -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$GITHUB_WORKSPACE/eng/lake/Lake.Parquet.targets"
 
   # The whole suite on the plain build, serializer included. The build job tests the renamed package, which
   # leaves the serializer and its tests out; this keeps every test that also covers other code (encryption,

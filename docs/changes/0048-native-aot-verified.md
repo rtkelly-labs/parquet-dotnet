@@ -21,10 +21,14 @@ own AOT consumers. Analyzer-clean is a claim; this makes it a build error to bre
   - `api`: the calls generated readers and writers make: typed fields of every type, nullable reads into `T?[]`,
     strings and byte arrays (strings also as UTF-8), decimals with their scale, timestamps with their kind, dates,
     GUIDs, statistics, under every codec, every encoding hint, one page or several per chunk, and modular encryption
-    (844 checks, with enum columns refused alike: they are the serializer's, which Lake.Parquet leaves out);
+    (845 checks; enum fields' nullable type is the same natively, and enum columns are refused alike: they are the
+    serializer's, which Lake.Parquet leaves out);
   - `cases`: generated cases (every kind and shape, codec, hint, page layout, encryption): values, levels, field IDs,
     row counts and statistics read back exactly;
-  - `read`/`write`: files the JIT build wrote read natively, and files the native build wrote read on the JIT;
+  - `read`/`write`: files the JIT build wrote read natively, and files the native build wrote read on the JIT; and
+    parquet-cpp, an independent implementation, reads every file the native build wrote and decrypts the encrypted ones
+    (the conformance project's `Files_written_by_another_build_agree_with_parquet_cpp`), which proves native encryption
+    where random nonces rule out comparing bytes;
   - `hashes`: files written natively are byte for byte the JIT build's; gzip cases are compared written uncompressed,
     since native AOT links its own zlib, whose compressed bytes differ while decoding the same (the gzip files
     themselves are covered by the cross-build reads, as are encrypted files, whose nonces are random);
@@ -34,7 +38,8 @@ own AOT consumers. Analyzer-clean is a claim; this makes it a build error to bre
     any other failure, or that file decoding, fails the run.
 - **CI:** the `aot` job builds the package as published (members stripped, renamed), builds the suite on the JIT and
   publishes it natively against that package, runs all of the above (3,000 fixed and 2,000 fresh seeds), and `lake-ci`
-  requires it.
+  requires it. It runs on Linux x64 and Windows x64; the macOS arm64 leg, on runners that cost ten times as much, runs
+  only on a pull request labelled `macos` or a run dispatched with `macos`.
 
 ## Evaluation
 

@@ -34,6 +34,40 @@ public class VerifyTests {
     }
 
     [Fact]
+    public void A_change_with_a_pending_fixup_is_proven_without_both() {
+        using var repo = new TestRepo();
+        AddFix(repo);
+        TestRepo.Commit(repo.Fork, "fixup! lake(0002): Fix A", ("src/A.cs", TestRepo.Lines("a", 20, (3, "fixed better"))));
+
+        (int code, string output) = Verify(repo, SuiteNeedsTheFix);
+
+        // reverting to HEAD~1 would have left the change itself in place, and the suite passing: "untested"
+        Assert.Equal(0, code);
+        Assert.Contains("lake(0002) proven", output);
+        Assert.Single(repo.Fork.Lines("worktree", "list"));
+    }
+
+    [Fact]
+    public void A_dependencys_fixup_above_the_change_stays_when_the_change_is_reverted() {
+        using var repo = new TestRepo();
+        repo.AddChange("0002", "base", "Base", files: ("src/B.cs", TestRepo.Lines("b", 20, (3, "base"))));
+        TestRepo.Commit(repo.Fork, "lake(0003): Fix A",
+            ("docs/changes/0003-fix-a.md", TestRepo.Record("Fix A", dependsOn: ["0002"])),
+            ("src/A.cs", TestRepo.Lines("a", 20, (3, "fixed"))),
+            ("src/Parquet.Test/ATest.cs", "a test of the fix\n"));
+        TestRepo.Commit(repo.Fork, "fixup! lake(0002): Base", ("src/B.cs", TestRepo.Lines("b", 20, (3, "base, fixed up"))));
+
+        // the suite needs the change's fix, and the dependency's fixup, which sits above the change in the stack
+        (int code, string output) = Verify(repo, d =>
+            File.ReadAllText(Path.Combine(d, "src/B.cs")).Contains("fixed up")
+                ? (File.ReadAllText(Path.Combine(d, "src/A.cs")).Contains("fixed") ? 0 : 1)
+                : 2, "0003");
+
+        Assert.Equal(0, code);
+        Assert.Contains("lake(0003) proven", output);
+    }
+
+    [Fact]
     public void A_change_nothing_tests_is_reported() {
         using var repo = new TestRepo();
         AddFix(repo);

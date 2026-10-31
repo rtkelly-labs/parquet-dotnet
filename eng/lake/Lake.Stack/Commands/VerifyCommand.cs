@@ -74,8 +74,11 @@ public static class VerifyCommand {
                 return new VerifyResult(number, VerifyOutcome.Fails, "the suite fails on its own branch");
             }
 
-            List<string> library = change.Files
+            // the change's own commits: it and its pending fixups, whose files count as its own too
+            List<StackCommit> own = commits.Where(c => c.Number == number || c.FixupOf == number).ToList();
+            List<string> library = own.SelectMany(c => c.Files)
                 .Where(f => !f.StartsWith(testDirectory, StringComparison.Ordinal) && !f.StartsWith(ChangeRecord.Directory + "/", StringComparison.Ordinal))
+                .Distinct(StringComparer.Ordinal)
                 .ToList();
             if(record.Evidence == ChangeEvidence.Benchmark) {
                 return new VerifyResult(number, VerifyOutcome.Passes, "passes on its own branch (evidence: benchmark)");
@@ -84,13 +87,29 @@ public static class VerifyCommand {
                 return new VerifyResult(number, VerifyOutcome.Passes, "passes on its own branch (tests only)");
             }
 
-            // Put the library files back as they were before this change (its dependencies stay).
-            foreach(string file in library) {
-                if(tree.Succeeds("cat-file", "-e", $"HEAD~1:{file}")) {
-                    tree.Run("checkout", "--quiet", "HEAD~1", "--", file);
-                } else {
-                    tree.Run("rm", "--quiet", "-f", "--", file);
+            // Put the library files back as they are without this change: the same branch replayed without the change and
+            // its fixups, so its dependencies, and their fixups wherever they sit in the stack, stay. (HEAD~1 is not
+            // that state once the change has a pending fixup on top.)
+            string withoutPath = path + "-without";
+            git.Run("worktree", "add", "--quiet", "--detach", withoutPath, model.Upstream);
+            try {
+                var without = new Git(withoutPath);
+                StackCommit? stuck = commits.Except(own).FirstOrDefault(c => !BranchesCommand.Replay(without, c));
+                if(stuck != null) {
+                    return new VerifyResult(number, VerifyOutcome.DoesNotApply, $"'{stuck.Subject}' does not apply without lake({number})");
                 }
+                foreach(string file in library) {
+                    string source = Path.Combine(withoutPath, file);
+                    string target = Path.Combine(path, file);
+                    if(File.Exists(source)) {
+                        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                        File.Copy(source, target, overwrite: true);
+                    } else if(File.Exists(target)) {
+                        File.Delete(target);
+                    }
+                }
+            } finally {
+                git.TryRun("worktree", "remove", "--force", withoutPath);
             }
             return runTests(path) != 0
                 ? new VerifyResult(number, VerifyOutcome.Proven, $"passes, and fails without its {library.Count} library file(s)")
