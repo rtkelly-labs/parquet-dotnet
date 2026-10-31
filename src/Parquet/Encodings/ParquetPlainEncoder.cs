@@ -1112,14 +1112,20 @@ static class ParquetPlainEncoder {
                 throw new InvalidDataException($"type length must be set for {nameof(TType.FIXED_LEN_BYTE_ARRAY)}");
             int length = tse.TypeLength.Value;
             while(read < data.Length) {
+                if(length < 0 || length > source.Length - sourceOffset)
+                    throw new InvalidDataException("FIXED_LEN_BYTE_ARRAY page is shorter than its values");
                 byte[] el = source.Slice(sourceOffset, length).ToArray();
                 sourceOffset += length;
                 data[read++] = el;
             }
         } else {
             while(read < data.Length) {
+                if(sourceOffset > source.Length - sizeof(int))
+                    throw new InvalidDataException("BYTE_ARRAY page is shorter than its values");
                 int length = source.ReadInt32(sourceOffset);
                 sourceOffset += sizeof(int);
+                if(length < 0 || length > source.Length - sourceOffset)
+                    throw new InvalidDataException($"BYTE_ARRAY value of {length} bytes runs past the end of the page");
                 if(length > 0) {
                     byte[] el = source.Slice(sourceOffset, length).ToArray();
                     sourceOffset += length;
@@ -1144,15 +1150,19 @@ static class ParquetPlainEncoder {
                 throw new InvalidDataException($"type length must be set for {nameof(TType.FIXED_LEN_BYTE_ARRAY)}");
             int length = tse.TypeLength.Value;
             while(read < data.Length) {
-                if(sourceOffset + length > copy.Length)
+                if(length < 0 || sourceOffset + length > copy.Length)
                     throw new InvalidDataException("FIXED_LEN_BYTE_ARRAY page is shorter than its values");
                 data[read++] = new ReadOnlyMemory<byte>(copy, sourceOffset, length);
                 sourceOffset += length;
             }
         } else {
             while(read < data.Length) {
+                if(sourceOffset > source.Length - sizeof(int))
+                    throw new InvalidDataException("BYTE_ARRAY page is shorter than its values");
                 int length = source.ReadInt32(sourceOffset);
                 sourceOffset += sizeof(int);
+                if(length < 0 || length > source.Length - sourceOffset)
+                    throw new InvalidDataException($"BYTE_ARRAY value of {length} bytes runs past the end of the page");
                 if(length > 0) {
                     data[read++] = new ReadOnlyMemory<byte>(copy, sourceOffset, length);
                     sourceOffset += length;
@@ -1512,6 +1522,8 @@ static class ParquetPlainEncoder {
 
             for(int spanIdx = 0; spanIdx < source.Length && i < data.Length; i++) {
 
+                if(length < 0 || length > source.Length - spanIdx)
+                    throw new InvalidDataException("FIXED_LEN_BYTE_ARRAY page is shorter than its values");
                 Span<byte> elementSpan = source.Slice(spanIdx, length);
                 char[] charBuffer = new char[System.Text.Encoding.UTF8.GetCharCount(elementSpan)];
                 decoder.GetChars(elementSpan, charBuffer, flush: true);
@@ -1527,8 +1539,12 @@ static class ParquetPlainEncoder {
             char[] chars = new char[source.Length];
             int used = 0;
             for(int spanIdx = 0; spanIdx < source.Length && i < data.Length; i++) {
+                if(spanIdx > source.Length - sizeof(int))
+                    throw new InvalidDataException("BYTE_ARRAY page is shorter than its values");
                 int length = source.ReadInt32(spanIdx);
                 spanIdx += sizeof(int);
+                if(length < 0 || length > source.Length - spanIdx)
+                    throw new InvalidDataException($"BYTE_ARRAY value of {length} bytes runs past the end of the page");
                 Span<byte> elementSpan = source.Slice(spanIdx, length);
                 int count = decoder.GetChars(elementSpan, chars.AsSpan(used), flush: true);
                 data[i] = new ReadOnlyMemory<char>(chars, used, count);

@@ -57,7 +57,7 @@ static class ByteStreamSplitEncoder {
         int k = SafeSizeOf<T>();
 
         if(s.Length < dest.Length * k) {
-            throw new ArgumentException("Source span is too small.", nameof(s));
+            throw new InvalidDataException("BYTE_STREAM_SPLIT page is shorter than its values");
         }
 
         /*
@@ -83,7 +83,7 @@ static class ByteStreamSplitEncoder {
         int k = SafeSizeOf<T>();
 
         if(s.Length < dest.Length * k) {
-            throw new ArgumentException("Source span is too small.", nameof(s));
+            throw new InvalidDataException("BYTE_STREAM_SPLIT page is shorter than its values");
         }
 
         // For 4-byte types (int, float), use Vector256 or Vector128 for parallel deinterleaving

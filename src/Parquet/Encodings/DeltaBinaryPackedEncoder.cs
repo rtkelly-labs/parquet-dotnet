@@ -111,6 +111,8 @@ static partial class DeltaBinaryPackedEncoder {
             return 0;
         }
 
+        CheckHeader(s, dest.Length - destOffset);
+
         System.Type? elementType = dest.GetType().GetElementType();
         if(elementType == null) {
             throw new NotSupportedException($"element type {elementType} is not supported");
@@ -147,6 +149,8 @@ static partial class DeltaBinaryPackedEncoder {
             return 0;
         }
 
+        CheckHeader(s, dest.Length);
+
         if(typeof(T) == typeof(long)) {
             return DecodeLong(s, dest.AsSpan<T, long>(), out consumedBytes);
         }
@@ -163,6 +167,26 @@ static partial class DeltaBinaryPackedEncoder {
         throw new NotSupportedException($"element type {typeof(T)} is not supported in {Encoding.DELTA_BINARY_PACKED}");
     }
 
+
+    /// <summary>
+    /// The header (block size, miniblocks per block, total value count) sizes the decoder's buffers and loops. The
+    /// format requires a block size that is a multiple of 128 and miniblocks of a multiple of 32 values; a miniblock
+    /// over 64 Ki values (and over the page's count) is refused rather than allocated.
+    /// </summary>
+    static void CheckHeader(Span<byte> s, int destLength) {
+        int spos = 0;
+        ulong blockSize = s.ULEB128Decode(ref spos);
+        ulong miniblocks = s.ULEB128Decode(ref spos);
+        ulong totalValueCount = s.ULEB128Decode(ref spos);
+        if(totalValueCount > (ulong)destLength)
+            throw new InvalidDataException($"DELTA_BINARY_PACKED page has {totalValueCount} values, more than the {destLength} expected");
+        if(totalValueCount <= 1)
+            return;
+        // every block lists its miniblocks' bit widths, a byte each
+        if(blockSize == 0 || blockSize % 128 != 0 || miniblocks == 0 || miniblocks > (ulong)(s.Length - spos) || blockSize % miniblocks != 0 ||
+            blockSize / miniblocks % 32 != 0 || blockSize / miniblocks > Math.Max(65536UL, totalValueCount))
+            throw new InvalidDataException($"DELTA_BINARY_PACKED header is corrupt (block size {blockSize}, {miniblocks} miniblocks)");
+    }
 
     /// <summary>
     /// short, ushort and uint are stored as INT32, whose deltas the format computes in 32-bit two's complement
