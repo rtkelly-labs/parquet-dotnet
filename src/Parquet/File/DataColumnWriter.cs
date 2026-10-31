@@ -138,6 +138,19 @@ class DataColumnWriter {
         cs.UncompressedSize += ph.UncompressedPageSize;
     }
 
+    /// <summary>
+    /// The stream a data page is encoded into. For fixed-width values the page's size is known within a little, so it
+    /// is one contiguous buffer from the start: the compressor then reads it in place, where a stream of blocks was
+    /// copied into one buffer first (GetBuffer). Byte arrays and strings keep the block stream.
+    /// </summary>
+    private MemoryStream GetPageStream<T>(WritingColumn<T> wc) where T : struct {
+        if(typeof(T) == typeof(ReadOnlyMemory<char>) || typeof(T) == typeof(ReadOnlyMemory<byte>) || wc.Values.IsEmpty)
+            return _rmsMgr.GetStream();
+        // values at most their CLR size (decimals and dates encode smaller), and levels in RLE well under a byte each
+        long estimate = (long)wc.Values.Length * System.Runtime.CompilerServices.Unsafe.SizeOf<T>() + wc.NumValues / 4 + 1024;
+        return _rmsMgr.GetStream(null, estimate, asContiguousBuffer: true);
+    }
+
     private async Task<ColumnMetrics> WriteAsync<T>(ColumnChunk chunk,
         WritingColumn<T> wc,
         SchemaElement tse,
@@ -165,7 +178,7 @@ class DataColumnWriter {
         }
 
         // data page
-        using(MemoryStream ms = _rmsMgr.GetStream()) {
+        using(MemoryStream ms = GetPageStream(wc)) {
             bool deltaEncode = _options.GetEncodingHint(wc.Field) == EncodingHint.DeltaBinaryPacked && DeltaBinaryPackedEncoder.CanEncode(wc.Values);
             bool byteSplitStreamEncode = _options.GetEncodingHint(wc.Field) == EncodingHint.ByteSplitStream && ByteStreamSplitEncoder.IsSupported(typeof(T));
 
