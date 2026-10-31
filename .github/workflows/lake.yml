@@ -21,6 +21,11 @@ on:
     branches: [master, "staging/**"]
   workflow_dispatch:
     inputs:
+      conformance_cases:
+        description: "Conformance cases per direction, on fresh seeds (docs/testing.md); 200 from seed 1 when empty"
+        required: false
+        default: ""
+        type: string
       verify_changes:
         description: "Verify every change alone (lake-stack verify), as on staging branches"
         required: false
@@ -185,6 +190,43 @@ jobs:
           if-no-files-found: error
 
   # The single required check.
+  # Generated cases, both directions, against parquet-cpp (docs/testing.md, "The conformance harness").
+  conformance:
+    name: conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Run the cases
+        env:
+          CASES: ${{ inputs.conformance_cases }}
+          RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CASES" ]; then
+            # a deep run explores seeds no earlier run used
+            export LAKE_CONFORMANCE_CASES="$CASES" LAKE_CONFORMANCE_FROM=$(( (RUN % 100000) * 10000 + 1000 ))
+          fi
+          export LAKE_CONFORMANCE_KEEP="$RUNNER_TEMP/failing"
+          dotnet test eng/lake/Lake.Parquet.Conformance --configuration Release
+
+      - name: Keep the failing files
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: conformance-failures
+          path: ${{ runner.temp }}/failing
+          if-no-files-found: ignore
+
   # Each code change alone on upstream (docs/testing.md, "Change verification"): on staging branches, so a
   # rebaseline is promoted only when every change still proves itself on the new upstream, and on demand.
   changes:
@@ -261,7 +303,7 @@ jobs:
   lake-ci:
     name: lake-ci
     if: always()
-    needs: [stack, build, changes, verify]
+    needs: [stack, build, conformance, changes, verify]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job that ran
@@ -272,7 +314,7 @@ jobs:
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           failed=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")')
           [ -z "$failed" ] || { echo "::error::did not succeed: $failed"; exit 1; }
-          for required in stack build; do
+          for required in stack build conformance; do
             [ "$(echo "$RESULTS" | jq -r ".$required.result")" = "success" ] || { echo "::error::$required did not succeed"; exit 1; }
           done
 

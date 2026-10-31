@@ -103,6 +103,13 @@ moves it, how to rebaseline onto upstream, re-basing other branches onto a new s
 the whole process), and resolving a rebase that stops.
 [`docs/changes/README.md`](docs/changes/README.md) has the rules for changes and their records.
 
+## How it is tested
+
+Beyond upstream's suite and each change's own tests, a conformance harness generates random schemas, values and
+writer options and checks every file against parquet-cpp in both directions (what the library writes, and what
+parquet-cpp writes for the library to read), statistics and encryption included; and `lake-stack verify` proves
+each change alone on upstream. [`docs/testing.md`](docs/testing.md) has every layer and how to run it.
+
 ## How Lake.Parquet is built
 
 The source keeps upstream's namespaces, project names and files: renaming them in the tree would
