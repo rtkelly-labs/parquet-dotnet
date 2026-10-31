@@ -83,15 +83,15 @@ static partial class DeltaBinaryPackedEncoder {
             StatsCompute.Compute(span, stats);
         } else if(typeof(T) == typeof(short)) {
             ReadOnlySpan<short> span = data.AsSpan<T, short>();
-            EncodeShort(span, destination, 1024, 32);
+            EncodeAsInt(data, destination);
             StatsCompute.Compute(span, stats);
         } else if(typeof(T) == typeof(ushort)) {
             ReadOnlySpan<ushort> span = data.AsSpan<T, ushort>();
-            EncodeUshort(span, destination, 1024, 32);
+            EncodeAsInt(data, destination);
             StatsCompute.Compute(span, stats);
         } else if(typeof(T) == typeof(uint)) {
             ReadOnlySpan<uint> span = data.AsSpan<T, uint>();
-            EncodeUint(span, destination, 1024, 32);
+            EncodeAsInt(data, destination);
             StatsCompute.Compute(span, stats);
         } else if(typeof(T) == typeof(ulong)) {
             ReadOnlySpan<ulong> span = data.AsSpan<T, ulong>();
@@ -124,15 +124,15 @@ static partial class DeltaBinaryPackedEncoder {
             return DecodeInt(s, ((int[])dest).AsSpan(destOffset), out consumedBytes);
         }
 
-        // Direct decoding for all supported types
+        // INT32-backed types are decoded as int (the stored type), then narrowed
         if(elementType == typeof(short)) {
-            return DecodeShort(s, ((short[])dest).AsSpan(destOffset), out consumedBytes);
+            return DecodeFromInt(s, ((short[])dest).AsSpan(destOffset), out consumedBytes);
         }
         if(elementType == typeof(ushort)) {
-            return DecodeUshort(s, ((ushort[])dest).AsSpan(destOffset), out consumedBytes);
+            return DecodeFromInt(s, ((ushort[])dest).AsSpan(destOffset), out consumedBytes);
         }
         if(elementType == typeof(uint)) {
-            return DecodeUint(s, ((uint[])dest).AsSpan(destOffset), out consumedBytes);
+            return DecodeFromInt(s, ((uint[])dest).AsSpan(destOffset), out consumedBytes);
         }
         if(elementType == typeof(ulong)) {
             return DecodeUlong(s, ((ulong[])dest).AsSpan(destOffset), out consumedBytes);
@@ -153,14 +153,8 @@ static partial class DeltaBinaryPackedEncoder {
         if(typeof(T) == typeof(int)) {
             return DecodeInt(s, dest.AsSpan<T, int>(), out consumedBytes);
         }
-        if(typeof(T) == typeof(short)) {
-            return DecodeShort(s, dest.AsSpan<T, short>(), out consumedBytes);
-        }
-        if(typeof(T) == typeof(ushort)) {
-            return DecodeUshort(s, dest.AsSpan<T, ushort>(), out consumedBytes);
-        }
-        if(typeof(T) == typeof(uint)) {
-            return DecodeUint(s, dest.AsSpan<T, uint>(), out consumedBytes);
+        if(typeof(T) == typeof(short) || typeof(T) == typeof(ushort) || typeof(T) == typeof(uint)) {
+            return DecodeFromInt(s, dest, out consumedBytes);
         }
         if(typeof(T) == typeof(ulong)) {
             return DecodeUlong(s, dest.AsSpan<T, ulong>(), out consumedBytes);
@@ -169,6 +163,66 @@ static partial class DeltaBinaryPackedEncoder {
         throw new NotSupportedException($"element type {typeof(T)} is not supported in {Encoding.DELTA_BINARY_PACKED}");
     }
 
+
+    /// <summary>
+    /// short, ushort and uint are stored as INT32, whose deltas the format computes in 32-bit two's complement
+    /// arithmetic. Encoding them in their own width wrapped deltas at 16 bits (short, ushort) or computed them
+    /// unsigned (uint), which other readers decode to different values. They are widened to int, sign-extended
+    /// for short and zero-extended for ushort, and uint keeps its bits.
+    /// </summary>
+    static void EncodeAsInt<T>(ReadOnlySpan<T> data, Stream destination) where T : struct {
+        int[] wide = System.Buffers.ArrayPool<int>.Shared.Rent(data.Length);
+        try {
+            Span<int> values = wide.AsSpan(0, data.Length);
+            if(typeof(T) == typeof(short)) {
+                ReadOnlySpan<short> span = data.AsSpan<T, short>();
+                for(int i = 0; i < span.Length; i++) {
+                    values[i] = span[i];
+                }
+            } else if(typeof(T) == typeof(ushort)) {
+                ReadOnlySpan<ushort> span = data.AsSpan<T, ushort>();
+                for(int i = 0; i < span.Length; i++) {
+                    values[i] = span[i];
+                }
+            } else {
+                ReadOnlySpan<uint> span = data.AsSpan<T, uint>();
+                for(int i = 0; i < span.Length; i++) {
+                    values[i] = unchecked((int)span[i]);
+                }
+            }
+            EncodeInt(values, destination, 1024, 32);
+        } finally {
+            System.Buffers.ArrayPool<int>.Shared.Return(wide);
+        }
+    }
+
+    /// <summary>Decodes INT32 deltas, then narrows them to short, ushort or uint.</summary>
+    static int DecodeFromInt<T>(Span<byte> s, Span<T> dest, out int consumedBytes) where T : struct {
+        int[] wide = System.Buffers.ArrayPool<int>.Shared.Rent(Math.Max(dest.Length, 1));
+        try {
+            Span<int> values = wide.AsSpan(0, dest.Length);
+            int read = DecodeInt(s, values, out consumedBytes);
+            if(typeof(T) == typeof(short)) {
+                Span<short> span = dest.AsSpan<T, short>();
+                for(int i = 0; i < read; i++) {
+                    span[i] = unchecked((short)values[i]);
+                }
+            } else if(typeof(T) == typeof(ushort)) {
+                Span<ushort> span = dest.AsSpan<T, ushort>();
+                for(int i = 0; i < read; i++) {
+                    span[i] = unchecked((ushort)values[i]);
+                }
+            } else {
+                Span<uint> span = dest.AsSpan<T, uint>();
+                for(int i = 0; i < read; i++) {
+                    span[i] = unchecked((uint)values[i]);
+                }
+            }
+            return read;
+        } finally {
+            System.Buffers.ArrayPool<int>.Shared.Return(wide);
+        }
+    }
 
     //this extension method calculates the position of the most significant bit that is set to 1 
     static int CalculateBitWidth(this Span<int> span) {
