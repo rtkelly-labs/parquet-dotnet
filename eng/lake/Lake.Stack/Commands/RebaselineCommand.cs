@@ -78,7 +78,7 @@ public static class RebaselineCommand {
                 context.FetchRemoteOf(onto);
                 string ontoSha = git.Resolve(onto);
                 if(!git.IsAncestor(ontoSha, "HEAD")) {
-                    throw new StackException($"{options.Branch} is not on {onto}: rebase it onto upstream first (with jj: jj rebase -b {options.Branch} -d {onto.Replace('/', '@')}; docs/maintaining.md)");
+                    throw new StackException($"{options.Branch} is not on {onto}: rebase it onto upstream first (with jj: jj rebase -b {options.Branch} -d {onto.Replace('/', '@')}; Lake.NET docs/lake-parquet/maintaining.md)");
                 }
                 if(git.Resolve("HEAD") == from) {
                     context.Out.WriteLine("Nothing to do: the stack is what is published.");

@@ -131,7 +131,7 @@ public sealed class StackModel {
     }
 
     /// <summary>
-    /// Every way the stack breaks docs/changes/README.md. Pending fixups are not problems: the next
+    /// Every way the stack breaks Lake.NET docs/lake-parquet/changes.md. Pending fixups are not problems: the next
     /// rebaseline folds them in.
     /// </summary>
     public IReadOnlyList<string> Problems() {

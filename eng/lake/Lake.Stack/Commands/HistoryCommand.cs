@@ -10,7 +10,7 @@ public sealed record HistoryVersion(string Record, string Published, string Date
 /// fast-forwards, so it needs no force-push and no tags, and every version stays reachable.
 /// <c>git log --first-parent lake/history/NNNN-name</c> lists the versions; <c>git range-diff A...B</c> between two
 /// published commits shows how a change moved. <see cref="BranchesCommand"/> and <see cref="PromoteCommand"/>
-/// record as they publish (docs/maintaining.md, "History of published changes").
+/// record as they publish (Lake.NET docs/lake-parquet/maintaining.md, "History of published changes").
 /// </summary>
 public static class HistoryCommand {
 

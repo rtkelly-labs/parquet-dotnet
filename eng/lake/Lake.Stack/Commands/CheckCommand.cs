@@ -13,7 +13,7 @@ public static class CheckCommand {
             context.Error.WriteLine(problem);
         }
         if(problems.Count > 0) {
-            context.Error.WriteLine($"{problems.Count} problem(s): the stack does not follow docs/changes/README.md");
+            context.Error.WriteLine($"{problems.Count} problem(s): the stack does not follow Lake.NET docs/lake-parquet/changes.md");
             return ExitCodes.Problems;
         }
         context.Out.WriteLine($"ok: {model.Commits.Count} commits on {model.Base[..10]} ({context.Upstream})");

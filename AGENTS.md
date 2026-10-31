@@ -1,35 +1,67 @@
 # AGENTS.md
 
-This is the Lake.Parquet fork of Parquet.Net (aloneguid/parquet-dotnet). Almost all of `src/` is
-upstream's code. `master` is upstream's history, unchanged, plus a stack of commits on top: `lake(0001)`
-(packaging, CI, docs) and one `lake(NNNN)` commit per change, each with its record in `docs/changes/`.
-Read `README.md`, `docs/vision.md`, `docs/maintaining.md` and `docs/changes/README.md` first.
+This is the Lake.Parquet fork of Parquet.Net (aloneguid/parquet-dotnet). Almost all of `src/` is upstream's code.
+`master` is upstream's history, unchanged, plus an immutable stack of commits on top: `lake(0001)` (packaging,
+tooling) and one `lake(NNNN)` commit per change.
 
-## Rules that are specific to this repository
+## Where decisions live
 
-- Keep upstream's code as upstream wrote it. Do not reformat, rename or restructure upstream files:
-  every edit to one is a potential conflict at the next rebase. Change only what the change needs.
-- One change is one commit, `lake(NNNN): title`, containing its record `docs/changes/NNNN-name.md`.
-  A fix to an existing change is a `fixup! lake(NNNN): title` commit (`git commit --fixup`), folded
-  in at the next rebaseline. Never add a merge commit above upstream, and never merge upstream in: the
-  stack is rebaselined (`lake-stack rebaseline`).
-- Rebaselining onto a newer upstream is the maintainer's decision. Never start one, never stage one,
-  and never run `rebaseline --push`, `--skip-ci-check` or `promote`, unless asked to. A rebaselined
-  stack reaches `master` only through `staging/<name>` with `lake-ci` green.
-- Never rewrite upstream's commits, and never force-push `master` without tagging its old head
-  (`lake/stack/<date>-<sha>`). `lake-stack rebaseline --push` does both (`docs/maintaining.md`).
+**Every major decision about this fork is made in Lake.NET, not here.** Read these before changing anything beyond a
+single change's code and record:
+
+| Question | Lake.NET page |
+|---|---|
+| What has been decided, and why; how changes are written | [docs/lake-parquet/decisions.md](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/decisions.md) |
+| Why the fork exists, what belongs in it | [docs/lake-parquet/vision.md](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/vision.md) |
+| The stack's rules, the record format | [docs/lake-parquet/changes.md](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/changes.md) |
+| Refs, rebaselining, staging, history, recovering | [docs/lake-parquet/maintaining.md](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/maintaining.md) |
+| Test layers, verification, benchmarks, profiling | [docs/lake-parquet/testing.md](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/testing.md) |
+| Proposing a change upstream (by hand only) | [docs/lake-parquet/upstreaming.md](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/upstreaming.md) |
+
+If a task needs a decision those pages do not make (a new rule, a new kind of change, a change to the process or to
+what the package contains), stop and propose it as a Lake.NET pull request; the code here follows once it is decided.
+Do not add design or process documents to this repository.
+
+**The one document written here is a change's record**, `docs/changes/NNNN-name.md`, in the same commit (and pull
+request) as the change's code: what it does, why, its evidence, its compatibility, its upstream status.
+
+## Writing a change so it can be rewritten deterministically
+
+Every change is replayed onto newer upstream code at each rebaseline, and sometimes has to be re-made. Write it so
+that can be done mechanically:
+
+- Make the smallest edit that does the job, in upstream's style. Do not reformat, rename or restructure upstream
+  code: every line touched is a line that can conflict.
+- Write the record so the change could be re-implemented from it alone: the problem, the exact behaviour changed,
+  and the evidence (the test that fails without it, or BenchmarkDotNet numbers against upstream).
+- Do mechanical edits with tools driven by data, never by hand: the namespace rename (`eng/lake/RenameNamespace.cs`),
+  files left out of the package (`eng/lake/Lake.Parquet.targets`), members left out (`eng/lake/strip-members.json`,
+  each with a syntax hash; refresh with `dotnet run eng/lake/StripMembers.cs -- . eng/lake/strip-members.json --hashes`
+  only after checking the member is still unneeded).
+- Change generated code in its template (`*.tt`) and the generated file together, identically.
+- When a replay conflicts, re-make the change from its record on the new code and prove it again
+  (`lake-stack verify NNNN`); do not merge hunks until it compiles.
+
+## Rules
+
+- One change is one commit, `lake(NNNN): title`, containing its record. A fix to an existing change is a
+  `fixup! lake(NNNN): title` commit, folded in at the next rebaseline. Never add a merge commit above upstream, and
+  never merge upstream in.
+- The published stack is immutable. Never rewrite upstream's commits or a published `master`; never delete tags or
+  `lake/history/*` refs. Rebaselining is the maintainer's decision: never start, stage or publish one
+  (`rebaseline`, `--push`, `--skip-ci-check`, `promote`) unless asked to. A stack reaches `master` only through
+  `staging/<name>` with `lake-ci` green.
 - `lake/change/*` branches are generated by `lake-stack branches`. Never commit to them.
-- Commit subjects and PR titles follow `commitlint.config.mjs` (`lake(NNNN): title`, or a `fixup!` of one).
-  Release notes come from them through git-cliff (`cliff.toml`).
-- After a rebaseline, put other branches back on the stack with `lake-stack rewire --apply <branch>`
-  (dry run without `--apply`), never by merging `master` into them.
-- The process lives in `eng/lake/Lake.Stack` (C#), not in shell or workflow YAML: change it there,
-  with a test in `eng/lake/Lake.Stack.Tests`.
-- Source keeps the `Parquet` namespace. `Lake.Parquet` exists only in the CI build (`eng/lake/`).
-- Upstream does not accept AI-generated issues or PRs and blocks accounts that send them. Never open
-  an issue, PR or comment on aloneguid/parquet-dotnet. Prepare material for a person instead.
+- Commit subjects and PR titles follow `commitlint.config.mjs`. Release notes come from them through git-cliff.
+- After a rebaseline, move other branches with `lake-stack rewire --apply <branch>`, never by merging `master`.
+- The process lives in `eng/lake/Lake.Stack` (C#; the same tool is ported to rig as `fork-stack`): change it there,
+  with a test in `eng/lake/Lake.Stack.Tests`, after the decision is made in Lake.NET.
+- Source keeps the `Parquet` namespace. `Lake.Parquet` exists only in the CI build.
+- Performance claims need BenchmarkDotNet numbers (`eng/lake/Lake.Parquet.Benchmarks`) against upstream, in the record.
+- Upstream does not accept AI-generated issues or PRs and blocks accounts that send them. Never open an issue, PR or
+  comment on aloneguid/parquet-dotnet. Prepare material for a person instead.
 
-## Package manager and commands
+## Commands
 
 .NET via `dotnet` (SDKs 8 and 10). Python with `pyarrow` and `pandas` for the Arrow interop tests.
 
@@ -38,17 +70,19 @@ git remote add upstream https://github.com/aloneguid/parquet-dotnet.git && git f
 alias lake-stack='dotnet run --project eng/lake/Lake.Stack --configuration Release --'
 lake-stack check                             # the stack follows the rules
 lake-stack status                            # the changes and their status
-lake-stack rewire --all                      # which branches are not on the current stack (dry run)
-dotnet test eng/lake/Lake.Stack.Tests        # the stack tool's own tests
 lake-stack verify 0026                       # one change alone: passes, and fails without its code
-dotnet build src/Parquet.slnx
+lake-stack history show 0035-rented-decompression-buffers   # published versions of a change
+dotnet test eng/lake/Lake.Stack.Tests        # the stack tool's own tests
 dotnet test src/Parquet.Test/Parquet.Test.csproj
+dotnet test eng/lake/Lake.Parquet.Conformance           # against parquet-cpp, both directions
+cd eng/lake/Lake.Parquet.Benchmarks && dotnet run -c Release -- --filter '*'   # BenchmarkDotNet
 ```
 
 The Lake.Parquet build, as CI runs it, on a copy:
 
 ```bash
-rsync -a --exclude .git ./ /tmp/lake/
+cp -r . /tmp/lake && rm -rf /tmp/lake/.git
+dotnet run eng/lake/StripMembers.cs -- /tmp/lake eng/lake/strip-members.json
 dotnet run eng/lake/RenameNamespace.cs -- /tmp/lake/src Parquet Lake.Parquet
 T="$PWD/eng/lake/Lake.Parquet.targets"
 dotnet build /tmp/lake/src/Parquet/Parquet.csproj -c Release \
