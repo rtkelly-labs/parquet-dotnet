@@ -34,4 +34,9 @@
         <Compile Include="..\Lake.Parquet.Conformance\Harness.cs" Link="Conformance\Harness.cs" />
     </ItemGroup>
 
+    <ItemGroup>
+        <!-- files other writers wrote, read by the api mode (embedded, so the native binary carries them) -->
+        <EmbeddedResource Include="data\*.parquet" LogicalName="%(Filename)%(Extension)" />
+    </ItemGroup>
+
 </Project>
