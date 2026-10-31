@@ -21,7 +21,6 @@ namespace Parquet.Encodings;
 static class ParquetPlainEncoder {
 
     private static readonly System.Text.Encoding E = System.Text.Encoding.UTF8;
-    private static readonly byte[] ZeroInt32 = BitConverter.GetBytes(0);
     private static readonly ArrayPool<byte> BytePool = ArrayPool<byte>.Shared;
 
     /// <summary>
@@ -956,19 +955,69 @@ static class ParquetPlainEncoder {
         return data.Length;
     }
 
+    /// <summary>
+    /// Buffers fixed-width values and length prefixes for a stream, in place of an array and a stream write per value
+    /// (<c>BitConverter.GetBytes</c>), which cost 32 bytes of garbage for every string, binary, date or time written.
+    /// </summary>
+    private sealed class ValueWriter : IDisposable {
+        private readonly Stream _destination;
+        private readonly byte[] _buffer = BytePool.Rent(8192);
+        private int _used;
+
+        public ValueWriter(Stream destination) => _destination = destination;
+
+        public void Write(int value) {
+            if(_used + sizeof(int) > _buffer.Length)
+                Flush();
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(_buffer.AsSpan(_used), value);
+            _used += sizeof(int);
+        }
+
+        public void Write(long value) {
+            if(_used + sizeof(long) > _buffer.Length)
+                Flush();
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(_buffer.AsSpan(_used), value);
+            _used += sizeof(long);
+        }
+
+        public void Write(ReadOnlySpan<byte> bytes) {
+            if(_used + bytes.Length > _buffer.Length) {
+                Flush();
+                if(bytes.Length > _buffer.Length) {
+                    _destination.Write(bytes);
+                    return;
+                }
+            }
+            bytes.CopyTo(_buffer.AsSpan(_used));
+            _used += bytes.Length;
+        }
+
+        public void Flush() {
+            if(_used > 0) {
+                _destination.Write(_buffer, 0, _used);
+                _used = 0;
+            }
+        }
+
+        public void Dispose() {
+            Flush();
+            BytePool.Return(_buffer);
+        }
+    }
+
     public static void Encode(ReadOnlySpan<byte[]> data, Stream destination) {
+        using var w = new ValueWriter(destination);
         foreach(byte[] element in data) {
-            byte[] l = BitConverter.GetBytes(element.Length);
-            destination.Write(l, 0, l.Length);
-            destination.Write(element, 0, element.Length);
+            w.Write(element.Length);
+            w.Write(element.AsSpan());
         }
     }
 
     public static void Encode(ReadOnlySpan<ReadOnlyMemory<byte>> data, Stream destination) {
+        using var w = new ValueWriter(destination);
         foreach(ReadOnlyMemory<byte> element in data) {
-            byte[] l = BitConverter.GetBytes(element.Length);
-            destination.Write(l, 0, l.Length);
-            destination.Write(element.Span);
+            w.Write(element.Length);
+            w.Write(element.Span);
         }
     }
 
@@ -1053,13 +1102,13 @@ static class ParquetPlainEncoder {
     }
 
     public static void Encode(ReadOnlySpan<DateTime> data, Stream destination, SchemaElement tse) {
+        using var w = new ValueWriter(destination);
 
         switch(tse.Type) {
             case TType.INT32:
                 foreach(DateTime element in data) {
                     int days = element.ToUnixDays();
-                    byte[] raw = BitConverter.GetBytes(days);
-                    destination.Write(raw, 0, raw.Length);
+                    w.Write(days);
                 }
                 break;
             case TType.INT64:
@@ -1067,16 +1116,13 @@ static class ParquetPlainEncoder {
                     foreach(DateTime element in data) {
                         if(tse.LogicalType.TIMESTAMP.Unit.MILLIS is not null) {
                             long unixTime = element.ToUnixMilliseconds();
-                            byte[] raw = BitConverter.GetBytes(unixTime);
-                            destination.Write(raw, 0, raw.Length);
+                            w.Write(unixTime);
                         } else if(tse.LogicalType.TIMESTAMP.Unit.MICROS is not null) {
                             long unixTime = element.ToUtc().ToUnixMicroseconds();
-                            byte[] raw = BitConverter.GetBytes(unixTime);
-                            destination.Write(raw, 0, raw.Length);
+                            w.Write(unixTime);
                         } else if(tse.LogicalType.TIMESTAMP.Unit.NANOS is not null) {
                             long unixTime = element.ToUtc().ToUnixNanoseconds();
-                            byte[] raw = BitConverter.GetBytes(unixTime);
-                            destination.Write(raw, 0, raw.Length);
+                            w.Write(unixTime);
                         } else {
                             throw new ParquetException($"Unexpected TimeUnit: {tse.LogicalType.TIMESTAMP.Unit}");
                         }
@@ -1084,14 +1130,12 @@ static class ParquetPlainEncoder {
                 } else if(tse.IsTimestampMillis()) {
                     foreach(DateTime element in data) {
                         long unixTime = element.ToUtc().ToUnixMilliseconds();
-                        byte[] raw = BitConverter.GetBytes(unixTime);
-                        destination.Write(raw, 0, raw.Length);
+                        w.Write(unixTime);
                     }
                 } else if(tse.IsTimestampMicros()) {
                     foreach(DateTime element in data) {
                         long unixTime = element.ToUtc().ToUnixMicroseconds();
-                        byte[] raw = BitConverter.GetBytes(unixTime);
-                        destination.Write(raw, 0, raw.Length);
+                        w.Write(unixTime);
                     }
                 } else {
                     throw new ArgumentException(
@@ -1102,6 +1146,7 @@ static class ParquetPlainEncoder {
                 }
                 break;
             case TType.INT96:
+                w.Flush();
                 foreach(DateTime element in data) {
                     var nano = new NanoTime(element.ToUtc());
                     nano.Write(destination);
@@ -1114,26 +1159,25 @@ static class ParquetPlainEncoder {
     }
 
     public static void Encode(ReadOnlySpan<DateOnly> data, Stream destination, SchemaElement tse) {
+        using var w = new ValueWriter(destination);
         foreach(DateOnly element in data) {
             int days = element.ToUnixDays();
-            byte[] raw = BitConverter.GetBytes(days);
-            destination.Write(raw, 0, raw.Length);
+            w.Write(days);
         }
     }
     public static void Encode(ReadOnlySpan<TimeOnly> data, Stream destination, SchemaElement tse) {
+        using var w = new ValueWriter(destination);
         switch(tse.Type) {
             case TType.INT32:
                 foreach(TimeOnly element in data) {
                     int ticks = (int)(element.Ticks / TimeSpan.TicksPerMillisecond);
-                    byte[] raw = BitConverter.GetBytes(ticks);
-                    destination.Write(raw, 0, raw.Length);
+                    w.Write(ticks);
                 }
                 break;
             case TType.INT64:
                 foreach(TimeOnly element in data) {
                     long ticks = element.Ticks / 10;
-                    byte[] raw = BitConverter.GetBytes(ticks);
-                    destination.Write(raw, 0, raw.Length);
+                    w.Write(ticks);
                 }
                 break;
         }
@@ -1252,19 +1296,18 @@ static class ParquetPlainEncoder {
     }
 
     public static void Encode(ReadOnlySpan<TimeSpan> data, Stream destination, SchemaElement tse) {
+        using var w = new ValueWriter(destination);
         switch(tse.Type) {
             case TType.INT32:
                 foreach(TimeSpan ts in data) {
                     int ms = (int)ts.TotalMilliseconds;
-                    byte[] raw = BitConverter.GetBytes(ms);
-                    destination.Write(raw, 0, raw.Length);
+                    w.Write(ms);
                 }
                 break;
             case TType.INT64:
                 foreach(TimeSpan ts in data) {
                     long micros = ts.Ticks / 10;
-                    byte[] raw = BitConverter.GetBytes(micros);
-                    destination.Write(raw, 0, raw.Length);
+                    w.Write(micros);
                 }
                 break;
             default:
@@ -1348,10 +1391,7 @@ static class ParquetPlainEncoder {
                 }
 
                 // write our data
-                if(len == 0)
-                    Array.Copy(ZeroInt32, 0, rb, rbOffset, ZeroInt32.Length);
-                else
-                    Array.Copy(BitConverter.GetBytes(len), 0, rb, rbOffset, sizeof(int));
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(rb.AsSpan(rbOffset), len);
                 rbOffset += sizeof(int);
                 if(len > 0) {
                     E.GetBytes(s.Span, rb.AsSpan(rbOffset));

@@ -45,7 +45,10 @@ static class ParquetDictionaryEncoder {
         int maxDistinct = (int)(count * threshold);
 
         // Dictionary to track unique values and their indices
-        var valueToIndex = new Dictionary<ReadOnlyMemory<char>, int>(count, ReadOnlyMemoryCharOrdinalComparer.Instance);
+        // Sized for a small dictionary and left to grow: presized for every value, the table cost about 32 bytes a
+        // row (28 MB for a million) even when the column has a handful of distinct values, which is when a
+        // dictionary is used at all.
+        var valueToIndex = new Dictionary<ReadOnlyMemory<char>, int>(Math.Min(count, 1024), ReadOnlyMemoryCharOrdinalComparer.Instance);
 
         // Rent memory for indexes
         var indexesOwner = MemoryOwner<int>.Allocate(count);
