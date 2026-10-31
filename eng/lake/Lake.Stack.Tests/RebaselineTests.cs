@@ -6,12 +6,13 @@ public class RebaselineTests {
 
     static readonly Func<StackContext, int> Passing = _ => 0;
     static readonly Func<StackContext, int> Failing = _ => 1;
+    static readonly CiStatus Green = (_, _) => CiState.Success;
 
     static (int Code, string Output, string Error) Rebaseline(TestRepo repo, RebaselineOptions options) {
         var output = new StringWriter();
         var error = new StringWriter();
         var context = new StackContext(repo.Fork, "upstream/master", output, error);
-        int code = RebaselineCommand.Run(context, options with { RunTests = options.RunTests ?? Passing });
+        int code = RebaselineCommand.Run(context, options with { RunTests = options.RunTests ?? Passing, Ci = options.Ci ?? Green });
         return (code, output.ToString(), error.ToString());
     }
 
@@ -22,7 +23,7 @@ public class RebaselineTests {
     }
 
     [Fact]
-    public void Verifies_locally_and_publishes_only_when_asked() {
+    public void Verifies_locally_stages_for_ci_and_publishes_only_when_asked() {
         using var repo = new TestRepo();
         string published = PublishedStack(repo);
         string upstream = repo.UpstreamCommit("upstream: new", ("src/D.cs", "d\n"));
@@ -34,11 +35,22 @@ public class RebaselineTests {
         Assert.True(repo.Fork.IsAncestor(upstream, "HEAD"));
         Assert.Equal(published, repo.Origin.Resolve("refs/heads/master"));
 
+        (code, output, _) = Rebaseline(repo, new RebaselineOptions(Continue: true, Stage: "v0.1.1"));
+
+        Assert.Equal(0, code);
+        Assert.Contains("Staged", output);
+        Assert.Equal(repo.Fork.Resolve("HEAD"), repo.Origin.Resolve("refs/heads/staging/v0.1.1"));
+        Assert.Equal(published, repo.Origin.Resolve("refs/heads/master"));
+
         int testRuns = 0;
-        (code, output, _) = Rebaseline(repo, new RebaselineOptions(Continue: true, Push: true, RunTests: _ => { testRuns++; return 0; }));
+        string? checkedCommit = null;
+        (code, output, _) = Rebaseline(repo, new RebaselineOptions(Continue: true, Push: true,
+            RunTests: _ => { testRuns++; return 0; }, Ci: (sha, check) => { checkedCommit = $"{check}@{sha}"; return CiState.Success; }));
 
         Assert.Equal(0, code);
         Assert.Equal(0, testRuns);   // the same head was already verified
+        Assert.Equal($"lake-ci@{repo.Fork.Resolve("HEAD")}", checkedCommit);
+        Assert.Null(repo.Origin.TryResolve("refs/heads/staging/v0.1.1"));
         Assert.Equal(repo.Fork.Resolve("HEAD"), repo.Origin.Resolve("refs/heads/master"));
         string tag = Assert.Single(repo.Origin.Lines("tag", "--list", "lake/stack/*"));
         Assert.Equal(published, repo.Origin.Resolve(tag));
@@ -60,6 +72,8 @@ public class RebaselineTests {
         repo.Fork.Run("add", "src/A.cs");
         repo.Fork.TryRun(["rebase", "--continue"], new Dictionary<string, string> { ["GIT_EDITOR"] = ":" });
 
+        (code, _, _) = Rebaseline(repo, new RebaselineOptions(Continue: true, Stage: "v0.1.1"));
+        Assert.Equal(0, code);
         (code, _, _) = Rebaseline(repo, new RebaselineOptions(Continue: true, Push: true));
 
         Assert.Equal(0, code);
@@ -73,12 +87,76 @@ public class RebaselineTests {
         string published = PublishedStack(repo);
         repo.UpstreamCommit("upstream: new", ("src/D.cs", "d\n"));
 
-        (int code, _, string error) = Rebaseline(repo, new RebaselineOptions(Push: true, RunTests: Failing));
+        (int code, _, string error) = Rebaseline(repo, new RebaselineOptions(Stage: "v0.1.1", Push: true, RunTests: Failing));
 
         Assert.Equal(1, code);
         Assert.Contains("tests fail", error);
         Assert.Equal(published, repo.Origin.Resolve("refs/heads/master"));
         Assert.Empty(repo.Origin.Lines("tag", "--list", "lake/stack/*"));
+        Assert.Null(repo.Origin.TryResolve("refs/heads/staging/v0.1.1"));   // a failing stack is not staged
+    }
+
+    [Theory]
+    [InlineData(CiState.Pending, "is pending")]
+    [InlineData(CiState.Failure, "is failure")]
+    [InlineData(CiState.Missing, "is missing")]
+    public void Publishes_only_once_the_staged_build_is_green(CiState state, string message) {
+        using var repo = new TestRepo();
+        string published = PublishedStack(repo);
+        repo.UpstreamCommit("upstream: new", ("src/D.cs", "d\n"));
+        Assert.Equal(0, Rebaseline(repo, new RebaselineOptions(Stage: "v0.1.1")).Code);
+
+        (int code, _, string error) = Rebaseline(repo, new RebaselineOptions(Continue: true, Push: true, Ci: (_, _) => state));
+
+        Assert.Equal(1, code);
+        Assert.Contains(message, error);
+        Assert.Equal(published, repo.Origin.Resolve("refs/heads/master"));
+        Assert.NotNull(repo.Origin.TryResolve("refs/heads/staging/v0.1.1"));
+    }
+
+    [Fact]
+    public void Refuses_to_publish_without_staging() {
+        using var repo = new TestRepo();
+        string published = PublishedStack(repo);
+        repo.UpstreamCommit("upstream: new", ("src/D.cs", "d\n"));
+
+        (int code, _, string error) = Rebaseline(repo, new RebaselineOptions(Push: true));
+
+        Assert.Equal(1, code);
+        Assert.Contains("Not staged", error);
+        Assert.Equal(published, repo.Origin.Resolve("refs/heads/master"));
+    }
+
+    [Fact]
+    public void A_head_changed_after_staging_is_restaged_before_it_can_be_published() {
+        using var repo = new TestRepo();
+        PublishedStack(repo);
+        repo.UpstreamCommit("upstream: new", ("src/D.cs", "d\n"));
+        Assert.Equal(0, Rebaseline(repo, new RebaselineOptions(Stage: "v0.1.1")).Code);
+        string firstStaged = repo.Origin.Resolve("refs/heads/staging/v0.1.1");
+        // A fix while the stack is staged: its CI result no longer applies.
+        TestRepo.Commit(repo.Fork, "fixup! lake(0002): Fix A", ("src/A.cs", TestRepo.Lines("a", 20, (3, "fixed better"))));
+        repo.Fork.TryRun(["rebase", "--interactive", "--autosquash", "upstream/master"], new Dictionary<string, string> { ["GIT_SEQUENCE_EDITOR"] = ":" });
+
+        (int code, string output, _) = Rebaseline(repo, new RebaselineOptions(Continue: true));
+
+        Assert.Equal(0, code);
+        Assert.Contains("Re-staged", output);
+        Assert.NotEqual(firstStaged, repo.Origin.Resolve("refs/heads/staging/v0.1.1"));
+        Assert.Equal(repo.Fork.Resolve("HEAD"), repo.Origin.Resolve("refs/heads/staging/v0.1.1"));
+    }
+
+    [Fact]
+    public void Status_reports_the_staged_builds_ci_state() {
+        using var repo = new TestRepo();
+        PublishedStack(repo);
+        repo.UpstreamCommit("upstream: new", ("src/D.cs", "d\n"));
+        Assert.Equal(0, Rebaseline(repo, new RebaselineOptions(Stage: "staging/v0.1.1")).Code);
+
+        (int code, string output, _) = Rebaseline(repo, new RebaselineOptions(Status: true, Ci: (_, _) => CiState.Pending));
+
+        Assert.Equal(0, code);
+        Assert.Contains("origin/staging/v0.1.1: lake-ci is pending", output);
     }
 
     [Fact]
@@ -97,7 +175,7 @@ public class RebaselineTests {
         using var repo = new TestRepo();
         string published = PublishedStack(repo);
         repo.UpstreamCommit("upstream: the same line", ("src/A.cs", TestRepo.Lines("a", 20, (3, "theirs"))));
-        Assert.Equal(1, Rebaseline(repo, new RebaselineOptions()).Code);
+        Assert.Equal(1, Rebaseline(repo, new RebaselineOptions(Stage: "v0.1.1")).Code);
 
         (int code, _, _) = Rebaseline(repo, new RebaselineOptions(Abort: true));
 

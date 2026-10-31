@@ -44,16 +44,27 @@ namespace Lake.Stack {
             var rebaselineOnto = new Option<string?>("--onto") { Description = "Rebase onto this ref instead of upstream's branch (an upstream release tag, say)" };
             var resume = new Option<bool>("--continue") { Description = "Resume a rebaseline: after resolving a conflict or fixing a change, or to publish one" };
             var abort = new Option<bool>("--abort") { Description = "Give up a rebaseline and put the stack branch back where it was" };
-            var publishIt = new Option<bool>("--push") { Description = "Publish once verified: tag the old head, move the remote's stack branch, regenerate the change branches" };
+            var showStatus = new Option<bool>("--status") { Description = "Show where a rebaseline in progress stands, and its staged build's CI result" };
+            var stage = new Option<string?>("--stage") { Description = "Push the verified stack to staging/<name> (a version such as v0.1.1) for CI to build" };
+            var publishIt = new Option<bool>("--push") { Description = "Publish once the staged build is green: tag the old head, move the remote's stack branch, regenerate the change branches" };
+            var skipCiCheck = new Option<bool>("--skip-ci-check") { Description = "Publish without a green staged build (only after checking CI yourself)" };
             var noTest = new Option<bool>("--no-test") { Description = $"Do not run {RebaselineCommand.DefaultTestProject}" };
             var rebaselineRemote = new Option<string>("--remote") { Description = "Default: origin", DefaultValueFactory = _ => "origin" };
             var rebaselineBranch = new Option<string>("--branch") { Description = "The stack branch (default: master)", DefaultValueFactory = _ => "master" };
-            var rebaseline = new Command("rebaseline", "Move the stack onto a newer upstream, deliberately: rebase, verify, and publish only with --push") {
-                rebaselineOnto, resume, abort, publishIt, noTest, rebaselineRemote, rebaselineBranch,
+            var rebaseline = new Command("rebaseline", "Move the stack onto a newer upstream, deliberately: rebase, verify, stage for CI, and publish only with --push") {
+                rebaselineOnto, resume, abort, showStatus, stage, publishIt, skipCiCheck, noTest, rebaselineRemote, rebaselineBranch,
             };
             rebaseline.SetAction(parse => Guard(error, () => RebaselineCommand.Run(Context(parse), new RebaselineOptions(
-                parse.GetValue(rebaselineOnto), parse.GetValue(resume), parse.GetValue(abort), parse.GetValue(publishIt), !parse.GetValue(noTest),
-                parse.GetValue(rebaselineRemote)!, parse.GetValue(rebaselineBranch)!))));
+                Onto: parse.GetValue(rebaselineOnto),
+                Continue: parse.GetValue(resume),
+                Abort: parse.GetValue(abort),
+                Status: parse.GetValue(showStatus),
+                Stage: parse.GetValue(stage),
+                Push: parse.GetValue(publishIt),
+                SkipCiCheck: parse.GetValue(skipCiCheck),
+                Test: !parse.GetValue(noTest),
+                Remote: parse.GetValue(rebaselineRemote)!,
+                Branch: parse.GetValue(rebaselineBranch)!))));
 
             var branchesOnto = new Option<string?>("--onto") { Description = "Build the branches from this ref instead of upstream" };
             var push = new Option<string?>("--push") { Description = "Force-push them to this remote, and delete its branches of retired changes" };

@@ -17,12 +17,12 @@ upstream file. It is the bottom commit of the stack, so every change is rebased 
   other branch onto the new stack.
 - `docs/changes/`: the rules of the stack, this record, and how to propose a change upstream.
 - `eng/lake/Lake.Stack` (C#) and its tests: checks the stack and pull requests into it, reports its
-  changes, rebaselines it onto upstream when the maintainer runs it (rebase, check, test, then publish
-  on request), rebuilds the `lake/change/*` branches, and moves other branches onto a new stack.
+  changes, rebaselines it onto upstream when the maintainer runs it (rebase, check, test, stage on
+  `staging/<name>` for CI, then promote to `master` once that build is green), rebuilds the `lake/change/*` branches, and moves other branches onto a new stack.
 - `eng/lake/RenameNamespace.cs`, `eng/lake/Lake.Parquet.targets`, `eng/lake/VerifyLakeAssembly.cs`
   and `eng/lake/PACKAGE_README.md`: the build-time rename from `Parquet` to `Lake.Parquet` and the
   package's identity.
-- `.github/workflows/lake.yml`: checks the stack, renames a copy, builds, verifies the rename, runs
+- `.github/workflows/lake.yml`: on pull requests, `master` and `staging/*`, checks the stack, renames a copy, builds, verifies the rename, runs
   the test suite against it, packs, and publishes on manual dispatch. `lake-ci` is the required check.
 
 The fork needs to ship improvements under its own name without renaming upstream's code, which would
@@ -46,9 +46,10 @@ sync: a branch cut from the previous stack moved only its own two commits onto t
 cut from upstream before the stack existed (`feature/variant-encoding`) moved its four, and a branch
 already on the new stack was left alone. Every `lake/change/*` branch, built alone on upstream with
 its `depends_on`, passes the whole suite. Each of those scenarios, and the record format, `check`,
-`check-pr`, `branches`, `promote` (including a refused lease) and `rebaseline` (verify then publish, a
-conflict resolved part-way, failing tests, a stale start, abort), is a test in
-`eng/lake/Lake.Stack.Tests`, on throwaway repositories: 51 tests.
+`check-pr`, `branches`, `promote` (including a refused lease) and `rebaseline` (verify, stage, then
+publish; publishing refused while the staged build is pending, failed, missing, unstaged or stale; a
+conflict resolved part-way; failing tests; a stale start; abort), is a test in
+`eng/lake/Lake.Stack.Tests`, on throwaway repositories: 68 tests.
 
 ## Upstream
 

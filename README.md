@@ -85,8 +85,9 @@ rtkelly-labs/parquet-dotnet master                    \- 0001 - 0002 - ... - 002
   `git log upstream/master..master` is therefore the complete list of what Lake.Parquet adds.
 - **The stack is rebaselined deliberately.** Moving onto a newer upstream is a choice the maintainer
   makes, because upstream's changes can break the changes on top: `lake-stack rebaseline` rebases the
-  stack, folds in fixups, checks it and runs the whole test suite locally, and publishes only when
-  asked (`--push`). A change upstream has taken drops out of the stack by itself, and the report says so.
+  stack, folds in fixups, checks it and runs the whole test suite locally, then stages it on a
+  `staging/<name>` branch (`staging/v0.1.1`) for CI to build as it builds `master`. Only once that
+  build is green does `--push` promote it to `master`. A change upstream has taken drops out of the stack by itself, and the report says so.
   Nothing rebases on a schedule.
 - **Nothing is lost when `master` moves.** Before a rebaseline is published the previous head is tagged
   `lake/stack/<date>-<sha>`, and every release is tagged `lake-v<version>`, so a pinned commit stays

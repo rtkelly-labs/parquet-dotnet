@@ -39,6 +39,7 @@ Keep the GitHub fork relationship: it is what lets a person open a pull request 
 | `upstream/master` | upstream's history | upstream | never touched here |
 | `master` | upstream + the stack (`lake(0001)` … `lake(NNNN)`) | squash-merged PRs (new changes, fixups); you, with `lake-stack rebaseline --push` | fast-forward for PRs; `--force-with-lease` for a rebaseline, always after tagging the old head |
 | `lake/change/NNNN-name` | upstream + one change + its `depends_on`, without records | `lake-stack rebaseline --push` (through `lake-stack branches`) | regenerated; never commit to one |
+| `staging/<name>` | a rebaselined stack, built by CI before it may replace `master` (`staging/v0.1.1`) | `lake-stack rebaseline --stage <name>` | force-pushed while staged; deleted when published or aborted |
 | `lake/stack/<date>-<sha>` (tags) | every head `master` moved away from | `lake-stack rebaseline --push` | created, never moved or deleted |
 | `lake-v<version>` (tags) | releases | the `lake.yml` publish job | created, never moved |
 | any other branch | work in progress, built on the stack | you | `lake-stack rewire` after each rebaseline |
@@ -83,7 +84,7 @@ dotnet test eng/lake/Lake.Stack.Tests # its tests (CI runs them before using it)
 | `check` | every commit above upstream is `lake(NNNN)` (or a pending `fixup!`), one per change, with a valid record in that commit; no merges; `depends_on` only names changes below; an addition edits no upstream file | no |
 | `check-pr --title <t> --base <sha>` | a pull request's title names its change (or is a fixup), and a new change brings its record | no |
 | `status` | each change, its kind, status and how many code files it touches | no |
-| `rebaseline` | **the step that moves the fork onto a newer upstream**: rebase (folding in fixups), report, check, run the test suite; `--push` publishes it; `--continue` resumes after a conflict or a fix; `--abort` puts everything back | the local `master`; with `--push`, the remote's `master`, a tag and `lake/change/*` |
+| `rebaseline` | **the step that moves the fork onto a newer upstream**: rebase (folding in fixups), report, check, run the test suite; `--stage <name>` pushes it to `staging/<name>` for CI; `--status` shows the staged build's result; `--push` publishes it once that build is green; `--continue` resumes after a conflict or a fix; `--abort` puts everything back | the local `master`; `staging/<name>`; with `--push`, the remote's `master`, a tag and `lake/change/*` |
 | `sync` | only the rebase part of `rebaseline`, for trying a rebase out locally | the current branch |
 | `branches` | regenerates every `lake/change/*`; `--push origin` force-pushes them and deletes those of retired changes | `lake/change/*` |
 | `rewire [--apply] (<branch>… \| --all)` | moves each branch's own commits onto the current stack; a dry run without `--apply` | the named branches |
@@ -112,8 +113,13 @@ Nothing runs it for you.
 
 ```bash
 git fetch origin && git switch master && git reset --hard origin/master   # start from what is published
-lake-stack rebaseline                          # or: --onto upstream/<branch> or an upstream release tag
+lake-stack rebaseline --stage v0.1.1           # rebase, verify locally, stage on staging/v0.1.1 for CI
+lake-stack rebaseline --status                 # later: is its lake-ci green?
+lake-stack rebaseline --continue --push        # promote it to master once it is
 ```
+
+`--onto upstream/<branch>` or `--onto <an upstream release tag>` rebases onto something other than
+upstream's `master`.
 
 It stops at the first thing that needs you, and tells you what to run next:
 
@@ -128,18 +134,26 @@ It stops at the first thing that needs you, and tells you what to run next:
    (`src/Parquet.Test`, needs `pyarrow` and `pandas`). If a test fails, upstream broke a change: fix it
    in that change (`git commit --fixup=<its commit>`, `git rebase -i --autosquash $(git merge-base HEAD upstream/master)`),
    then `lake-stack rebaseline --continue`.
-4. **Stop, unpublished.** The rebased stack is on your local `master` only. Look it over: the
-   range-diff, `lake-stack status`, and if you like the CI build, by pushing it to a branch of its own
-   (`git push origin HEAD:refs/heads/rebaseline-check`; `lake.yml` runs on its pull request or push).
-5. **Publish, when you are satisfied**: `lake-stack rebaseline --continue --push`. It tags the old head
-   `lake/stack/<date>-<sha>`, moves `origin/master` with a lease on the old head (if a pull request
-   merged meanwhile, nothing moves: rebaseline again to include it), and regenerates every
-   `lake/change/*` branch, deleting those of retired changes. The tests are not run again if `master`
-   has not changed since they passed.
+4. **Stage it for CI**: `lake-stack rebaseline --continue --stage v0.1.1` (or pass `--stage` to the
+   first `rebaseline`, which stages as soon as the local checks pass). It pushes the rebased stack to
+   `staging/v0.1.1`, where `lake.yml` builds it exactly as it builds `master`: the stack rules, the
+   tool's tests, the renamed `Lake.Parquet` build, the whole suite on .NET 8 and 10, and the package.
+   `origin/master` is untouched; consumers see nothing yet.
+5. **Evaluate.** `lake-stack rebaseline --status` shows where it stands and the staged build's
+   `lake-ci` result (read through the `gh` CLI). Look at the range-diff and `lake-stack status` too. If
+   CI fails, fix the change it points at (a fixup, `git rebase -i --autosquash`), then
+   `lake-stack rebaseline --continue`: it checks and tests the new head and re-stages it.
+6. **Promote to production, when you are satisfied**: `lake-stack rebaseline --continue --push`. It is
+   refused unless `staging/<name>` holds exactly the head being published and `lake-ci` passed on it.
+   Then it tags the old head `lake/stack/<date>-<sha>`, moves `origin/master` with a lease on the old
+   head (if a pull request merged meanwhile, nothing moves: rebaseline again to include it),
+   regenerates every `lake/change/*` branch (deleting those of retired changes), and deletes the
+   staging branch. `--skip-ci-check` publishes without the CI gate, for when you have checked the
+   build yourself.
 
-`lake-stack rebaseline --abort` at any point puts `master` back where it started. Until it is pushed
-or aborted, the starting point is kept in git config (`lake.rebaseline.*`), so `--continue` works
-across sessions. Publishing needs push rights that may force-push `master` and create tags (a
+`lake-stack rebaseline --abort` at any point puts `master` back where it started and deletes the
+staging branch. Until it is pushed or aborted, the starting point and the staging branch are kept in
+git config (`lake.rebaseline.*`), so `--continue` and `--status` work across sessions. Publishing needs push rights that may force-push `master` and create tags (a
 repository admin, past the branch rules).
 
 ### When the rebase stops
@@ -197,7 +211,7 @@ its record, and open a pull request (a fix to an existing change: `fixup! lake(N
 | Fix a change | PR with a `fixup! lake(NNNN): title` commit (`git commit --fixup=<its commit>`), squash-merged with that title; the next rebaseline folds it in |
 | Fix the fork's tooling or docs | the same, as `fixup! lake(0001): …` |
 | Fold fixups in, without moving to a newer upstream | `lake-stack rebaseline --onto $(git merge-base master upstream/master)`: the same steps, on the base you already have |
-| Reword, reorder, split or retire changes | inside a rebaseline: once it stops ready and unpublished, `git rebase -i $(git merge-base HEAD upstream/master)`, then `lake-stack rebaseline --continue --push` (a changed head is checked and tested again); a retired change's record goes with its commit |
+| Reword, reorder, split or retire changes | inside a rebaseline: once it stops ready and unpublished, `git rebase -i $(git merge-base HEAD upstream/master)`, then `lake-stack rebaseline --continue` (a changed head is checked, tested and re-staged) and, once CI is green, `--continue --push`; a retired change's record goes with its commit |
 | Release | Actions → Lake.Parquet → Run workflow on `master` with `publish`; tags `lake-v<version>` |
 
 Pending fixups are fine on `master` between rebaselines: `check` reports them, the build includes

@@ -61,3 +61,25 @@ public class ChangeRecordTests {
     public void Knows_which_files_are_records(string path, string? number) =>
         Assert.Equal(number, ChangeRecord.NumberOf(path));
 }
+
+public class GitHubCiTests {
+
+    [Theory]
+    [InlineData("https://github.com/rtkelly-labs/parquet-dotnet.git", "rtkelly-labs/parquet-dotnet")]
+    [InlineData("https://github.com/rtkelly-labs/parquet-dotnet", "rtkelly-labs/parquet-dotnet")]
+    [InlineData("git@github.com:rtkelly-labs/parquet-dotnet.git", "rtkelly-labs/parquet-dotnet")]
+    [InlineData("http://local_proxy@127.0.0.1:41405/git/rtkelly-labs/parquet-dotnet", "rtkelly-labs/parquet-dotnet")]
+    [InlineData("/tmp/origin.git", null)]
+    public void Knows_the_repository_a_remote_points_at(string url, string? slug) =>
+        Assert.Equal(slug, GitHubCi.Slug(url));
+
+    [Theory]
+    [InlineData("", CiState.Missing)]
+    [InlineData("in_progress\t", CiState.Pending)]
+    [InlineData("queued\t", CiState.Pending)]
+    [InlineData("completed\tsuccess", CiState.Success)]
+    [InlineData("completed\tfailure", CiState.Failure)]
+    [InlineData("completed\tcancelled", CiState.Failure)]
+    public void Reads_the_newest_runs_state(string line, CiState state) =>
+        Assert.Equal(state, GitHubCi.Parse(line));
+}

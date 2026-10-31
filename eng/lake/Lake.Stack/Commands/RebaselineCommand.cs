@@ -6,11 +6,15 @@ public sealed record RebaselineOptions(
     string? Onto = null,
     bool Continue = false,
     bool Abort = false,
+    bool Status = false,
+    string? Stage = null,
     bool Push = false,
+    bool SkipCiCheck = false,
     bool Test = true,
     string Remote = "origin",
     string Branch = "master",
-    Func<StackContext, int>? RunTests = null);
+    Func<StackContext, int>? RunTests = null,
+    CiStatus? Ci = null);
 
 /// <summary>
 /// Moves the stack onto a newer upstream, as a deliberate step the maintainer takes: upstream changes
@@ -20,23 +24,33 @@ public sealed record RebaselineOptions(
 /// <item>rebases the checked-out stack branch onto upstream (folding in fixups) and reports what moved;</item>
 /// <item>on a conflict, stops; resolve it, <c>git rebase --continue</c>, then <c>rebaseline --continue</c>;</item>
 /// <item>checks the stack's rules and runs the test suite on the result;</item>
-/// <item>with <c>--push</c> only: tags the old head, moves the remote's stack branch with a lease on it,
-/// and regenerates the change branches. Without it, the rebased stack stays local for you to look at.</item>
+/// <item>with <c>--stage &lt;name&gt;</c>: pushes the result to <c>staging/&lt;name&gt;</c>, where CI builds it as
+/// it would build master;</item>
+/// <item>with <c>--push</c> only, and only once the staged commit is the one being published and its
+/// <c>lake-ci</c> check passed: tags the old head, moves the remote's stack branch with a lease on it,
+/// regenerates the change branches and deletes the staging branch.</item>
 /// </list>
-/// The old head is remembered in git config until the rebaseline is pushed or aborted.
+/// The old head and the staging branch are remembered in git config until the rebaseline is pushed or
+/// aborted.
 /// </summary>
 public static class RebaselineCommand {
 
     const string FromKey = "lake.rebaseline.from";
     const string OntoKey = "lake.rebaseline.onto";
     const string VerifiedKey = "lake.rebaseline.verified";
+    const string StageKey = "lake.rebaseline.stage";
+
+    public const string StagingPrefix = "staging/";
 
     public const string DefaultTestProject = "src/Parquet.Test/Parquet.Test.csproj";
 
     public static int Run(StackContext context, RebaselineOptions options) {
         Git git = context.Git;
         if(options.Abort) {
-            return Abort(context);
+            return Abort(context, options);
+        }
+        if(options.Status) {
+            return Status(context, options);
         }
 
         string from;
@@ -97,11 +111,24 @@ public static class RebaselineCommand {
             git.Run("config", VerifiedKey, head);
         }
 
+        string? stage = options.Stage is string name ? StagingBranch(name) : Config(git, StageKey);
+        if(stage != null) {
+            Stage(context, options, stage, head);
+        }
+
         if(!options.Push) {
             context.Out.WriteLine();
             context.Out.WriteLine($"Ready, not published: {options.Branch} is {head[..10]} locally, {options.Remote}/{options.Branch} is still {from[..10]}.");
-            context.Out.WriteLine("Look it over (git range-diff, the CI build of a pushed branch), then publish with: rebaseline --continue --push");
+            context.Out.WriteLine(stage == null
+                ? "Next: stage it for CI with rebaseline --continue --stage <name> (staging/<name>, a version such as v0.1.1)."
+                : $"Next: wait for {GitHubCi.Check} on {stage} (rebaseline --status), then publish with rebaseline --continue --push.");
             return ExitCodes.Ok;
+        }
+
+        if(options.SkipCiCheck) {
+            context.Error.WriteLine($"warning: publishing without a green staged build (--skip-ci-check)");
+        } else if(!StagedAndGreen(context, options, stage, head)) {
+            return ExitCodes.Problems;
         }
 
         int promoted = PromoteCommand.Run(context, new PromoteOptions(from, head, options.Remote, options.Branch));
@@ -109,15 +136,86 @@ public static class RebaselineCommand {
             return promoted;
         }
         int branches = BranchesCommand.Run(context, "HEAD", onto, options.Remote);
+        if(stage != null) {
+            git.TryRun("push", "--quiet", options.Remote, "--delete", stage);
+            context.Out.WriteLine($"{options.Remote}/{stage} deleted: {options.Branch} has it now");
+        }
         Clear(git);
         return branches;
     }
 
-    static int Abort(StackContext context) {
+    /// <summary><c>v0.1.1</c> or <c>staging/v0.1.1</c> -> <c>staging/v0.1.1</c>.</summary>
+    public static string StagingBranch(string name) =>
+        name.StartsWith(StagingPrefix, StringComparison.Ordinal) ? name : StagingPrefix + name;
+
+    /// <summary>Pushes the rebased stack to its staging branch, where CI builds it, unless it is already there.</summary>
+    static void Stage(StackContext context, RebaselineOptions options, string stage, string head) {
+        Git git = context.Git;
+        git.Run("config", StageKey, stage);
+        string? staged = RemoteHead(git, options.Remote, stage);
+        if(staged == head) {
+            return;
+        }
+        git.Run("push", "--quiet", "--force", options.Remote, $"{head}:refs/heads/{stage}");
+        context.Out.WriteLine(staged == null
+            ? $"Staged {head[..10]} as {options.Remote}/{stage}: CI is building it."
+            : $"Re-staged {options.Remote}/{stage}: {staged[..10]} -> {head[..10]}; CI is building it again.");
+    }
+
+    /// <summary>True when the staging branch holds exactly this head and its lake-ci check passed.</summary>
+    static bool StagedAndGreen(StackContext context, RebaselineOptions options, string? stage, string head) {
+        if(stage == null) {
+            context.Error.WriteLine("Not staged: stage it first (rebaseline --continue --stage <name>), and publish once its CI is green.");
+            return false;
+        }
+        string? staged = RemoteHead(context.Git, options.Remote, stage);
+        if(staged != head) {
+            context.Error.WriteLine($"{options.Remote}/{stage} is {staged?[..10] ?? "missing"}, not {head[..10]}: stage this head (rebaseline --continue) and let CI build it.");
+            return false;
+        }
+        CiState state = (options.Ci ?? GitHubCi.For(context.Git, options.Remote))(head, GitHubCi.Check);
+        if(state != CiState.Success) {
+            context.Error.WriteLine($"{GitHubCi.Check} on {stage} ({head[..10]}) is {state.ToString().ToLowerInvariant()}: publish once it has passed.");
+            return false;
+        }
+        context.Out.WriteLine($"{GitHubCi.Check} passed on {stage} ({head[..10]}).");
+        return true;
+    }
+
+    static int Status(StackContext context, RebaselineOptions options) {
+        Git git = context.Git;
+        string from = Config(git, FromKey) ?? throw new StackException("no rebaseline in progress");
+        string head = git.Resolve("HEAD");
+        context.Out.WriteLine($"Rebaseline from {from[..10]} onto {Config(git, OntoKey)}: now {head[..10]}{(RebaseInProgress(git) ? ", rebase in progress" : "")}.");
+        context.Out.WriteLine($"Tested locally: {(Config(git, VerifiedKey) == head ? "yes" : "no")}.");
+        if(Config(git, StageKey) is not string stage) {
+            context.Out.WriteLine("Not staged.");
+            return ExitCodes.Ok;
+        }
+        string? staged = RemoteHead(git, options.Remote, stage);
+        if(staged != head) {
+            context.Out.WriteLine($"{options.Remote}/{stage} is {staged?[..10] ?? "missing"}, not this head: rebaseline --continue re-stages it.");
+            return ExitCodes.Ok;
+        }
+        CiState state = (options.Ci ?? GitHubCi.For(git, options.Remote))(head, GitHubCi.Check);
+        context.Out.WriteLine($"{options.Remote}/{stage}: {GitHubCi.Check} is {state.ToString().ToLowerInvariant()}.");
+        return ExitCodes.Ok;
+    }
+
+    static string? RemoteHead(Git git, string remote, string branch) {
+        IReadOnlyList<string> lines = git.Lines("ls-remote", "--heads", remote, "refs/heads/" + branch);
+        return lines.Count == 0 ? null : lines[0].Split('\t')[0];
+    }
+
+    static int Abort(StackContext context, RebaselineOptions options) {
         Git git = context.Git;
         string from = Config(git, FromKey) ?? throw new StackException("no rebaseline in progress");
         if(RebaseInProgress(git)) {
             git.Run("rebase", "--abort");
+        }
+        if(Config(git, StageKey) is string stage && RemoteHead(git, options.Remote, stage) != null) {
+            git.TryRun("push", "--quiet", options.Remote, "--delete", stage);
+            context.Out.WriteLine($"{options.Remote}/{stage} deleted.");
         }
         git.Run("reset", "--quiet", "--hard", from);
         Clear(git);
@@ -146,7 +244,7 @@ public static class RebaselineCommand {
     }
 
     static void Clear(Git git) {
-        foreach(string key in new[] { FromKey, OntoKey, VerifiedKey }) {
+        foreach(string key in new[] { FromKey, OntoKey, VerifiedKey, StageKey }) {
             git.TryRun("config", "--unset", key);
         }
     }

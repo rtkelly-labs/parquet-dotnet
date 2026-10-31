@@ -6,8 +6,9 @@ name: Lake.Parquet
 #
 # This file is the fork's own; upstream's build.yml is left as upstream wrote it and still runs.
 # `lake-ci` is the required check. Unlike upstream's workflow it has no paths-ignore, so a PR that
-# only edits a change record still reports it. It also runs on master after a rebaseline is pushed
-# (docs/maintaining.md, "Rebaselining onto upstream"); rebaselines themselves are never run here.
+# only edits a change record still reports it. A rebaselined stack is pushed to staging/<name> and
+# built here first: `lake-stack rebaseline --push` publishes it to master only once lake-ci passed on
+# that exact commit (docs/maintaining.md, "Rebaselining onto upstream"). Rebaselines never run here.
 #
 # Actions are pinned to commit SHAs by hand: rig's pinning policy is not applied to forks, because
 # it would also rewrite upstream's workflow and conflict on every rebase.
@@ -16,7 +17,8 @@ on:
   pull_request:
     branches: [master]
   push:
-    branches: [master]
+    # staging/*: a rebaselined stack, built here before it may replace master (docs/maintaining.md).
+    branches: [master, "staging/**"]
   workflow_dispatch:
     inputs:
       publish:
