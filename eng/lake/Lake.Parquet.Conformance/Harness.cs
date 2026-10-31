@@ -40,9 +40,13 @@ public static partial class Harness {
         return groups;
     }
 
-    static async Task WriteAsync(Case c, IReadOnlyList<IReadOnlyList<LeafChunk>> groups, string path) {
+    static async Task WriteAsync(Case c, IReadOnlyList<IReadOnlyList<LeafChunk>> groups, string path, CompressionMethod? compression = null) {
+        ParquetOptions options = c.WriteOptions();
+        if(compression is CompressionMethod method) {
+            options.CompressionMethod = method;
+        }
         await using FileStream stream = System.IO.File.Create(path);
-        await using ParquetWriter writer = await ParquetWriter.CreateAsync(c.Schema, stream, c.WriteOptions());
+        await using ParquetWriter writer = await ParquetWriter.CreateAsync(c.Schema, stream, options);
         foreach(IReadOnlyList<LeafChunk> group in groups) {
             using ParquetRowGroupWriter rowGroup = writer.CreateRowGroup();
             foreach(LeafChunk chunk in group) {
@@ -167,7 +171,8 @@ public static partial class Harness {
     }
 
     /// <summary>Writes a case's file without checking it (for another build of the library to read: see CheckFileAsync).</summary>
-    public static async Task WriteFileAsync(Case c, string path) => await WriteAsync(c, Generate(c), path);
+    public static async Task WriteFileAsync(Case c, string path, CompressionMethod? compression = null) =>
+        await WriteAsync(c, Generate(c), path, compression);
 
     /// <summary>
     /// Checks a file written for a case, perhaps by another build of the library (JIT or native AOT): the values,
