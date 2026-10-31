@@ -82,7 +82,26 @@ foreach (IGrouping<string, Entry> file in entries.GroupBy(e => e.File))
     }
     if (!printHashes && doomed.Count > 0)
     {
-        File.WriteAllText(path, tree.RemoveNodes(doomed, SyntaxRemoveOptions.KeepNoTrivia)!.ToFullString());
+        // A member whose leading trivia holds preprocessor directives (and the disabled code between them, such as an
+        // #if NET7_0_OR_GREATER block before it) keeps that trivia; any other member goes with its comments.
+        static bool HasDirectives(SyntaxNode m) => m.GetLeadingTrivia().Any(t => t.IsDirective || t.IsKind(SyntaxKind.DisabledTextTrivia));
+        var annotation = new SyntaxAnnotation("lake-strip");
+        tree = tree.ReplaceNodes(doomed, (_, m) => m.WithAdditionalAnnotations(annotation));
+        // one at a time: trivia a removed member keeps moves to the next token, which may start another doomed member
+        while (tree.GetAnnotatedNodes(annotation).FirstOrDefault() is SyntaxNode next)
+        {
+            if (HasDirectives(next))
+            {
+                // the directives stay; the member's own documentation goes with it
+                tree = tree.ReplaceNode(next, next.WithLeadingTrivia(next.GetLeadingTrivia().Where(t =>
+                    !t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia) && !t.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia))));
+                next = tree.GetAnnotatedNodes(annotation).First();
+            }
+            tree = tree.RemoveNode(next, HasDirectives(next)
+                ? SyntaxRemoveOptions.KeepLeadingTrivia | SyntaxRemoveOptions.KeepUnbalancedDirectives
+                : SyntaxRemoveOptions.KeepNoTrivia | SyntaxRemoveOptions.KeepUnbalancedDirectives)!;
+        }
+        File.WriteAllText(path, tree.ToFullString());
         removed += doomed.Count;
     }
 }
