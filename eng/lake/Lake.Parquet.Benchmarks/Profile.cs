@@ -5,7 +5,7 @@ using Parquet.Schema;
 namespace Lake.Parquet.Benchmarks;
 
 /// <summary>
-/// One scenario in a loop, for a profiler to attach to (docs/testing.md, "Profiling"):
+/// One scenario in a loop, for a profiler to attach to (Lake.NET docs/lake-parquet/testing.md, "Profiling"):
 /// <c>dotnet run -c Release -- profile &lt;scenario&gt; [seconds]</c>. The scenarios are the benchmarks' calls.
 /// </summary>
 public static class Profile {

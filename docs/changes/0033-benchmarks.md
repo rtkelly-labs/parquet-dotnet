@@ -17,7 +17,9 @@ as their stored UTF-8 bytes (`lake(0017)`; fork only, upstream rejects it). Writ
 what is measured is the library.
 
 The `ParquetProject` property builds it against another checkout, so the same benchmarks compare the fork with
-upstream (`docs/testing.md`, "Benchmarks"). Performance changes (`evidence: benchmark`) cite these numbers.
+upstream (Lake.NET `docs/lake-parquet/testing.md`, "Benchmarks"). Performance changes (`evidence: benchmark`) cite
+these numbers. `.github/workflows/lake-bench.yml` runs both on one runner for every staging branch and on demand, and
+`eng/lake/CompareBenchmarks.cs` turns the two JSON exports into the job summary's table of time and allocation ratios.
 
 ## Evaluation
 

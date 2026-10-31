@@ -36,6 +36,6 @@ Upstream's documentation applies apart from the namespace:
 
 ## Links
 
-- [Fork repository](https://github.com/rtkelly-labs/parquet-dotnet) and its [vision](https://github.com/rtkelly-labs/parquet-dotnet/blob/master/docs/vision.md)
+- [Fork repository](https://github.com/rtkelly-labs/parquet-dotnet) and its [decisions and vision](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/decisions.md)
 - [Changes carried on top of upstream](https://github.com/rtkelly-labs/parquet-dotnet/tree/master/docs/changes)
 - [Upstream: aloneguid/parquet-dotnet](https://github.com/aloneguid/parquet-dotnet)

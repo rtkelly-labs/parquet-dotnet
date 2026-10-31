@@ -6,7 +6,7 @@ return Cli.Run(args, Console.Out, Console.Error);
 
 namespace Lake.Stack {
 
-    /// <summary>The command line. Each command's work is in Commands/; docs/maintaining.md is the guide.</summary>
+    /// <summary>The command line. Each command's work is in Commands/; Lake.NET docs/lake-parquet/maintaining.md is the guide.</summary>
     public static class Cli {
 
         public static int Run(string[] args, TextWriter output, TextWriter error) {
@@ -108,7 +108,7 @@ namespace Lake.Stack {
             historyRecord.SetAction(parse => Guard(error, () => HistoryCommand.RecordAll(Context(parse), parse.GetValue(historyRemote)!, parse.GetValue(historyBranch)!)));
             var history = new Command("history", "Every published version of the stack and of each change (lake/history/*)") { historyShow, historyRecord };
 
-            var root = new RootCommand("Keeps Lake.Parquet's change stack on top of upstream (docs/maintaining.md)") {
+            var root = new RootCommand("Keeps Lake.Parquet's change stack on top of upstream (Lake.NET docs/lake-parquet/maintaining.md)") {
                 repo, upstream, check, checkPr, status, verify, rebaseline, sync, branches, rewire, promote, history,
             };
             return root.Parse(args).Invoke(new InvocationConfiguration { Output = output, Error = error });

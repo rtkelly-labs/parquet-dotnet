@@ -47,7 +47,9 @@ Each change is:
 - **Recorded** in [`docs/changes/`](docs/changes/), with whether it has gone upstream.
 - **Retired** once upstream has it or an equivalent, whoever raised it there.
 
-The aim is for the list to shrink, not grow. [`docs/vision.md`](docs/vision.md) has the reasoning
+The aim is for the list to shrink, not grow. The fork's decisions and process are documented in Lake.NET, under
+[`docs/lake-parquet/`](https://github.com/rtkelly-labs/Lake.NET/tree/main/docs/lake-parquet), starting with its [decisions](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/decisions.md);
+this repository carries the code and one record per change. [Lake.NET's `docs/lake-parquet/vision.md`](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/vision.md) has the reasoning
 and the boundaries.
 
 ## Using it
@@ -99,18 +101,18 @@ Every change also exists as a branch `lake/change/NNNN-name`: upstream plus that
 the changes it depends on), rebuilt at every rebaseline. Its diff against upstream is exactly what an
 upstream pull request would contain.
 
-[`docs/maintaining.md`](docs/maintaining.md) is the guide to this structure: every ref and what
+[Lake.NET's `docs/lake-parquet/maintaining.md`](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/maintaining.md) is the guide to this structure: every ref and what
 moves it, how to rebaseline onto upstream, re-basing other branches onto a new stack with one command
 (the `rewire` command of [`eng/lake/Lake.Stack`](eng/lake/Lake.Stack), the C# tool that runs
 the whole process), and resolving a rebase that stops.
-[`docs/changes/README.md`](docs/changes/README.md) has the rules for changes and their records.
+[Lake.NET's `docs/lake-parquet/changes.md`](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/changes.md) has the rules for changes and their records.
 
 ## How it is tested
 
 Beyond upstream's suite and each change's own tests, a conformance harness generates random schemas, values and
 writer options and checks every file against parquet-cpp in both directions (what the library writes, and what
 parquet-cpp writes for the library to read), statistics and encryption included; and `lake-stack verify` proves
-each change alone on upstream. [`docs/testing.md`](docs/testing.md) has every layer and how to run it.
+each change alone on upstream. [Lake.NET's `docs/lake-parquet/testing.md`](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/testing.md) has every layer and how to run it.
 
 ## How Lake.Parquet is built
 
@@ -160,7 +162,7 @@ Upstream's `build.yml` stays as upstream wrote it. `lake-ci` is the fork's own r
 ## Contributing
 
 - A new change is a pull request whose squash commit is titled `lake(NNNN): title` and that adds its
-  record `docs/changes/NNNN-name.md` ([format](docs/changes/README.md)).
+  record `docs/changes/NNNN-name.md` ([format](https://github.com/rtkelly-labs/Lake.NET/blob/main/docs/lake-parquet/changes.md)).
 - A fix to an existing change is a pull request titled `fixup! lake(NNNN): title`; the next rebaseline
   folds it into that change's commit.
 - Prefer upstream. If a change is useful to everyone, it belongs in Parquet.Net; the record links the

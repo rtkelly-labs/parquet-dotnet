@@ -25,7 +25,7 @@ public enum ChangeStatus {
 }
 
 /// <summary>
-/// One record in docs/changes/, <c>NNNN-name.md</c>, with YAML frontmatter (docs/changes/README.md,
+/// One record in docs/changes/, <c>NNNN-name.md</c>, with YAML frontmatter (Lake.NET docs/lake-parquet/changes.md,
 /// "Record format"). Only the flat subset of YAML the records use is read: <c>key: value</c>, a quoted
 /// string, or a <c>[a, b]</c> list, with an optional <c># comment</c>.
 /// </summary>

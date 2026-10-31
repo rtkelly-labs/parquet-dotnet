@@ -113,7 +113,7 @@ public static class SyncCommand {
                 }
             }
             report.AppendLine();
-            report.AppendLine("Resolve it in that change's own commit, keeping both intents, then `git rebase --continue` (docs/maintaining.md, \"When the rebase stops\").");
+            report.AppendLine("Resolve it in that change's own commit, keeping both intents, then `git rebase --continue` (Lake.NET docs/lake-parquet/maintaining.md, \"When the rebase stops\").");
             report.AppendLine();
             report.AppendLine("```");
             report.AppendLine(conflict.Message);
