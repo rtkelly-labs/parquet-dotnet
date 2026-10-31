@@ -206,11 +206,24 @@ jobs:
   # Generated cases, both directions, against parquet-cpp (Lake.NET docs/lake-parquet/testing.md, "The conformance harness").
   # Lake.Parquet under native AOT (Lake.NET docs/lake-parquet/testing.md, "Native AOT"): the package as published
   # (members stripped, renamed, IsAotCompatible), with the regression suite published by PublishAot, every trimming
-  # and AOT warning an error, then checked against the same suite on the JIT.
+  # and AOT warning an error, then checked against the same suite on the JIT, on Linux, Windows and macOS (arm64).
   aot:
-    name: aot
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    name: aot (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
+          - os: macos-latest
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -223,15 +236,18 @@ jobs:
             10.0.x
 
       - name: Native AOT prerequisites
+        if: runner.os == 'Linux'
         run: sudo apt-get install --yes --no-install-recommends clang zlib1g-dev
 
+      # a worktree rather than rsync (missing on Windows runners) or tar (which reads D:\ as a remote host there)
       - name: Strip and rename a copy to Lake.Parquet
         run: |
           set -euo pipefail
-          rsync -a --exclude .git ./ "$RUNNER_TEMP/lake/"
-          dotnet run eng/lake/StripMembers.cs -- "$RUNNER_TEMP/lake" eng/lake/strip-members.json
-          dotnet run eng/lake/RenameNamespace.cs -- "$RUNNER_TEMP/lake/src" Parquet Lake.Parquet
-          dotnet run eng/lake/RenameNamespace.cs -- "$RUNNER_TEMP/lake/eng/lake" Parquet Lake.Parquet
+          lake="$RUNNER_TEMP/lake"
+          git worktree add --quiet --detach "$lake" HEAD
+          dotnet run eng/lake/StripMembers.cs -- "$lake" eng/lake/strip-members.json
+          dotnet run eng/lake/RenameNamespace.cs -- "$lake/src" Parquet Lake.Parquet
+          dotnet run eng/lake/RenameNamespace.cs -- "$lake/eng/lake" Parquet Lake.Parquet
 
       - name: Build the suite on the JIT, and publish it with native AOT
         working-directory: ${{ runner.temp }}/lake/eng/lake/Lake.Parquet.AotTests
@@ -239,15 +255,17 @@ jobs:
           ParquetProject: ${{ runner.temp }}/lake/src/Parquet/Parquet.csproj
         run: |
           set -euo pipefail
-          hooks=(-p:CustomBeforeMicrosoftCommonTargets="$LAKE_TARGETS" -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$LAKE_TARGETS")
+          targets="$GITHUB_WORKSPACE/eng/lake/Lake.Parquet.targets"
+          hooks=(-p:CustomBeforeMicrosoftCommonTargets="$targets" -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$targets")
           dotnet build -c Release "${hooks[@]}"
-          dotnet publish -c Release -r linux-x64 -o "$RUNNER_TEMP/aot" "${hooks[@]}"
+          dotnet publish -c Release -r ${{ matrix.rid }} -o "$RUNNER_TEMP/aot" "${hooks[@]}"
 
       - name: Run the suite natively, and against the JIT
         working-directory: ${{ runner.temp }}/lake/eng/lake/Lake.Parquet.AotTests
         run: |
           set -euo pipefail
           native="$RUNNER_TEMP/aot/Lake.Parquet.AotTests"
+          [ -f "$native.exe" ] && native="$native.exe"
           jit=(dotnet bin/Release/net10.0/Lake.Parquet.AotTests.dll)
           corpus="$RUNNER_TEMP/lake/src/Parquet.Test/data"
           out="$RUNNER_TEMP/aot-results"
@@ -259,11 +277,11 @@ jobs:
           "$native" write 1 1000 "$out/native-files" && "${jit[@]}" read 1 1000 "$out/native-files"
           "${jit[@]}" hashes 1 1000 > "$out/jit-hashes.txt"
           "$native" hashes 1 1000 > "$out/native-hashes.txt"
-          diff "$out/jit-hashes.txt" "$out/native-hashes.txt"
+          diff --strip-trailing-cr "$out/jit-hashes.txt" "$out/native-hashes.txt"
           echo "$(wc -l < "$out/native-hashes.txt") files byte for byte the JIT build's"
           "${jit[@]}" corpus "$corpus" > "$out/jit-corpus.txt"
           "$native" corpus "$corpus" > "$out/native-corpus.txt"
-          diff "$out/jit-corpus.txt" "$out/native-corpus.txt"
+          diff --strip-trailing-cr "$out/jit-corpus.txt" "$out/native-corpus.txt"
           echo "$(wc -l < "$out/native-corpus.txt") corpus files decoded alike"
 
   # The whole suite on the plain build, serializer included. The build job tests the renamed package, which
