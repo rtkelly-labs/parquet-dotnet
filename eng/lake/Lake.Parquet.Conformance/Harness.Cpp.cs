@@ -10,6 +10,24 @@ namespace Lake.Parquet.Conformance;
 /// <summary>The parquet-cpp half of the harness: the oracle the library's files are read back with.</summary>
 public static partial class Harness {
 
+    /// <summary>
+    /// Checks a file another build of the library wrote for a case (native AOT, say) with every oracle: the library's
+    /// round trip and statistics, and parquet-cpp reading and, for encrypted cases, decrypting it.
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> CheckWrittenFileAsync(Case c, string path) {
+        var problems = new List<string>();
+        IReadOnlyList<IReadOnlyList<LeafChunk>> groups = Generate(c);
+        Dictionary<string, int> typeLengths;
+        try {
+            typeLengths = TypeLengths(c, path);
+        } catch(Exception e) {
+            return [$"parquet-cpp could not open the file: {e.Message}"];
+        }
+        await CheckRoundTripAsync(c, groups, path, typeLengths, problems);
+        CheckWithParquetCpp(c, groups, path, typeLengths, problems);
+        return problems;
+    }
+
     public static async Task<IReadOnlyList<string>> RunAsync(Case c, string directory) {
         var problems = new List<string>();
         IReadOnlyList<IReadOnlyList<LeafChunk>> groups = Generate(c);
