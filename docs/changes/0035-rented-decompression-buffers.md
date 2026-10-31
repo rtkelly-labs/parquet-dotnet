@@ -15,7 +15,8 @@ evidence: benchmark   # a performance change: its tests guard behaviour and pass
   every page read. Zstd compression let ZstdSharp allocate the output per page, then copied it.
 - **Change:** the page is read into a rented buffer (`ReadRestAsync`, as Zstd decompression already did since
   `lake(0011)`); Snappy decompresses into a buffer of the length its header gives; gzip reads from a stream over the
-  rented buffer; Zstd compresses straight into rented memory of `GetCompressBound` size.
+  rented buffer; Zstd compresses straight into rented memory of `GetCompressBound` size, and Snappy into rented
+  memory of `GetMaxCompressedLength` size (`CompressToMemory` zeroed its buffer on every page).
 
 ## Evaluation
 

@@ -53,7 +53,10 @@ class DefaultCompressor : ICompressor {
 
     private async ValueTask<IMemoryOwner<byte>> SnappyCompress(MemoryStream source) {
         ReadOnlySpan<byte> src = source.GetBuffer().AsSpan(0, (int)source.Length);
-        return Snappy.CompressToMemory(src);
+        // into rented memory of the worst-case size: CompressToMemory's buffer was zeroed on every page
+        var owner = MemoryOwner<byte>.Allocate(Snappy.GetMaxCompressedLength(src.Length));
+        int written = Snappy.Compress(src, owner.Span);
+        return owner.Slice(0, written);
     }
 
     private async ValueTask<IMemoryOwner<byte>> SnappyDecompress(Stream source) {
