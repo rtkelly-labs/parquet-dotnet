@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!--
+      Lake.Parquet's native AOT regression suite (Lake.NET docs/lake-parquet/testing.md, "Native AOT"). Published with
+      PublishAot, every trimming and AOT warning an error, it runs the conformance harness's generated cases with the
+      library's own oracles, writes files that must be byte for byte what the JIT build writes, and decodes upstream's
+      test corpus to the same values as the JIT build. ParquetProject picks the library: the plain build by default,
+      the renamed and stripped Lake.Parquet copy in CI (as an environment variable, like the benchmarks).
+    -->
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <LangVersion>latest</LangVersion>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <InvariantGlobalization>true</InvariantGlobalization>
+        <PublishAot>true</PublishAot>
+        <IsAotCompatible>true</IsAotCompatible>
+        <TrimmerSingleWarn>false</TrimmerSingleWarn>
+        <ParquetProject Condition="'$(ParquetProject)' == ''">$(MSBuildThisFileDirectory)..\..\..\src\Parquet\Parquet.csproj</ParquetProject>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="$(ParquetProject)" />
+    </ItemGroup>
+
+    <!-- the conformance harness's case generator and its library-only oracles, shared, not copied -->
+    <ItemGroup>
+        <Compile Include="..\Lake.Parquet.Conformance\Kinds.cs" Link="Conformance\Kinds.cs" />
+        <Compile Include="..\Lake.Parquet.Conformance\Shapes.cs" Link="Conformance\Shapes.cs" />
+        <Compile Include="..\Lake.Parquet.Conformance\Cases.cs" Link="Conformance\Cases.cs" />
+        <Compile Include="..\Lake.Parquet.Conformance\Harness.cs" Link="Conformance\Harness.cs" />
+    </ItemGroup>
+
+</Project>

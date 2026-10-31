@@ -243,7 +243,7 @@ public static class Reverse {
     // ---- reading with the library ----
 
     static async Task ReadAsync(Case c, IReadOnlyList<IReadOnlyList<LeafChunk>> groups, string path, List<string> problems) {
-        await using FileStream stream = File.OpenRead(path);
+        await using FileStream stream = System.IO.File.OpenRead(path);
         var options = new ParquetOptions {
             Decryption = c.Encryption is { } e
                 ? new ParquetDecryptionOptions { FooterKey = e.FooterKey, KeyRetriever = metadata => metadata == null ? null : e.ColumnKeys[Encoding.UTF8.GetString(metadata)] }

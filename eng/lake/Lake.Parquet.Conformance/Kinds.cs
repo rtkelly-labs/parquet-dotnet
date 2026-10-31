@@ -179,7 +179,7 @@ public static class Kinds {
         },
     ];
 
-    static LeafKind Integer<T>(string name, Func<Random, T> generate, Func<T, object> physical, Order order) where T : struct =>
+    static LeafKind Integer<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.Interfaces)] T>(string name, Func<Random, T> generate, Func<T, object> physical, Order order) where T : struct =>
         new LeafKind<T> {
             Name = name, Order = order,
             Declare = (n, nullable) => new DataField(n, typeof(T), nullable),
