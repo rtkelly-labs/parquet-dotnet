@@ -44,7 +44,12 @@ class DefaultCompressor : ICompressor {
 
     private async ValueTask<IMemoryOwner<byte>> NoneDecompress(Stream source, int destinationLength) {
         var r = MemoryOwner<byte>.Allocate(destinationLength);
-        await source.CopyToAsync(r.Memory);
+        int copied = await source.CopyToAsync(r.Memory);
+        if(copied < destinationLength) {
+            // the rest of the rented buffer is not this page's data
+            r.Dispose();
+            throw new EndOfStreamException($"page has {copied} bytes, but its header declares {destinationLength}. File is most likely truncated or corrupt.");
+        }
         return r;
 
     }
@@ -145,8 +150,8 @@ class DefaultCompressor : ICompressor {
         using var brotli = new BrotliStream(source, CompressionMode.Decompress, leaveOpen: true);
 
         byte[] buffer = ArrayPool<byte>.Shared.Rent(81920);
+        int totalRead = 0;
         try {
-            int totalRead = 0;
             while(totalRead < destinationLength) {
                 int toRead = Math.Min(buffer.Length, destinationLength - totalRead);
                 int read = await brotli.ReadAsync(buffer, 0, toRead);
@@ -159,6 +164,10 @@ class DefaultCompressor : ICompressor {
             ArrayPool<byte>.Shared.Return(buffer);
         }
 
+        if(totalRead < destinationLength) {
+            // IMPORTANT: .Slice() transfers ownership, so owner does not need to be disposed
+            owner = owner.Slice(0, totalRead);
+        }
         return owner;
     }
 
@@ -266,8 +275,13 @@ class DefaultCompressor : ICompressor {
     private async ValueTask<IMemoryOwner<byte>> Lz4Decompress(Stream source, int destinationLength) {
         using MemoryOwner<byte> compressed = await ReadRestAsync(source);
         var owner = MemoryOwner<byte>.Allocate(destinationLength);
-        LZ4Codec.Decode(compressed.Span, owner.Span);
-        return owner;
+        int decoded = LZ4Codec.Decode(compressed.Span, owner.Span);
+        if(decoded < 0) {
+            owner.Dispose();
+            throw new InvalidDataException("LZ4 page data is corrupt.");
+        }
+        // IMPORTANT: .Slice() transfers ownership, so owner does not need to be disposed
+        return decoded < destinationLength ? owner.Slice(0, decoded) : owner;
     }
 
     public async ValueTask<IMemoryOwner<byte>> CompressAsync(
