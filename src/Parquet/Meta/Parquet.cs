@@ -361,21 +361,29 @@ public class BoundingBox {
         proto.StructBegin();
 
         // 1: Xmin, double
-                // 2: Xmax, double
-                // 3: Ymin, double
-                // 4: Ymax, double
-                // 5: Zmin, double
+        proto.WriteDoubleField(1, Xmin);
+        // 2: Xmax, double
+        proto.WriteDoubleField(2, Xmax);
+        // 3: Ymin, double
+        proto.WriteDoubleField(3, Ymin);
+        // 4: Ymax, double
+        proto.WriteDoubleField(4, Ymax);
+        // 5: Zmin, double
         if(Zmin != null) {
-                    }
+            proto.WriteDoubleField(5, Zmin.Value);
+        }
         // 6: Zmax, double
         if(Zmax != null) {
-                    }
+            proto.WriteDoubleField(6, Zmax.Value);
+        }
         // 7: Mmin, double
         if(Mmin != null) {
-                    }
+            proto.WriteDoubleField(7, Mmin.Value);
+        }
         // 8: Mmax, double
         if(Mmax != null) {
-                    }
+            proto.WriteDoubleField(8, Mmax.Value);
+        }
 
         proto.StructEnd();
     }

@@ -1,4 +1,5 @@
 ﻿using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 
@@ -160,6 +161,18 @@ class ThriftCompactProtocolWriter {
     public void WriteI64Field(short fieldId, long value) {
         WriteFieldBegin(fieldId, CompactType.I64);
         WriteI64Value(value);
+    }
+
+    // the compact protocol writes a double as its 8 IEEE 754 bytes, little-endian (ReadDouble reads them back)
+    public void WriteDoubleValue(double value) {
+        System.Span<byte> bytes = stackalloc byte[sizeof(double)];
+        BinaryPrimitives.WriteDoubleLittleEndian(bytes, value);
+        _outputStream.Write(bytes);
+    }
+
+    public void WriteDoubleField(short fieldId, double value) {
+        WriteFieldBegin(fieldId, CompactType.Double);
+        WriteDoubleValue(value);
     }
 
     public void WriteBinaryValue(byte[] value) {
