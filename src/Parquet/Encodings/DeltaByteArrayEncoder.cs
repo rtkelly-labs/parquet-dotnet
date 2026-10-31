@@ -13,25 +13,6 @@ namespace Parquet.Encodings;
 /// </remarks>
 static class DeltaByteArrayEncoder {
 
-    private static void MakeStrings(int[] prefixLenghs, Span<ReadOnlyMemory<char>> dest, int count) {
-        if(count == 0)
-            return;
-        ReadOnlyMemory<char> v = dest[0];
-        for(int i = 1, di = 1; i < count; i++, di++) {
-            ReadOnlyMemory<char> prefix = v.Slice(0, prefixLenghs[i]);
-            ReadOnlyMemory<char> suffix = dest[di];
-
-            // create new string by concatenating prefix and suffix, and assign it back to dest[di]
-            Memory<char> vNext = new char[prefix.Length + suffix.Length];
-            prefix.CopyTo(vNext);
-            suffix.CopyTo(vNext.Slice(prefix.Length));
-
-            ReadOnlyMemory<char> vNextReadOnly = vNext;
-            v = vNextReadOnly;
-            dest[di] = v;
-        }
-    }
-
     private static void MakeBytes(int[] prefixLenghs, Span<ReadOnlyMemory<byte>> dest, int count) {
         if(count == 0)
             return;
@@ -60,12 +41,22 @@ static class DeltaByteArrayEncoder {
             // prefix lengths encoded as DELTA_BINARY_PACKED
             int prefixLengthsCount = DeltaBinaryPackedEncoder.Decode(s, prefixLenghs, 0, valueCount, out int consumedBytes);
 
+            if(typeof(T) == typeof(ReadOnlyMemory<char>)) {
+                // prefix lengths count bytes, not chars: rebuild each value's UTF-8 bytes, then decode it whole
+                var bytes = new ReadOnlyMemory<byte>[valueCount];
+                DeltaLengthByteArrayEncoder.Decode<ReadOnlyMemory<byte>>(s.Slice(consumedBytes), bytes, valueCount);
+                MakeBytes(prefixLenghs, bytes, valueCount);
+                Span<ReadOnlyMemory<char>> strings = dest.AsSpan<T, ReadOnlyMemory<char>>();
+                for(int i = 0; i < valueCount; i++) {
+                    strings[i] = System.Text.Encoding.UTF8.GetString(bytes[i].Span).AsMemory();
+                }
+                return valueCount;
+            }
+
             // the suffixes encoded as delta length byte arrays (DELTA_LENGTH_BYTE_ARRAY).
             int suffixesCount = DeltaLengthByteArrayEncoder.Decode(s.Slice(consumedBytes), dest, valueCount);
 
-            if(typeof(T) == typeof(ReadOnlyMemory<char>)) {
-                MakeStrings(prefixLenghs, dest.AsSpan<T, ReadOnlyMemory<char>>(), valueCount);
-            } else if(typeof(T) == typeof(ReadOnlyMemory<byte>)) {
+            if(typeof(T) == typeof(ReadOnlyMemory<byte>)) {
                 MakeBytes(prefixLenghs, dest.AsSpan<T, ReadOnlyMemory<byte>>(), valueCount);
             } else {
                 throw new NotSupportedException($"unsupported type {typeof(T)}, delta byte arrays only can do strings and byte arrays");
