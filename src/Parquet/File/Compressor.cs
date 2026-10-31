@@ -57,8 +57,25 @@ class DefaultCompressor : ICompressor {
     }
 
     private async ValueTask<IMemoryOwner<byte>> SnappyDecompress(Stream source) {
-        byte[] compressed = source.ToByteArray()!;
-        return Snappy.DecompressToMemory(compressed);
+        using MemoryOwner<byte> compressed = await ReadRestAsync(source);
+        var owner = MemoryOwner<byte>.Allocate(Snappy.GetUncompressedLength(compressed.Span));
+        int written = Snappy.Decompress(compressed.Span, owner.Span);
+        return written == owner.Length ? owner : owner.Slice(0, written);
+    }
+
+    /// <summary>
+    /// The rest of a page's stream, in rented memory. Reading it with <c>ToByteArray</c> grew a MemoryStream and then
+    /// copied it out: about three times the page in garbage, for every page of every Snappy (the default) column read.
+    /// </summary>
+    private static async ValueTask<MemoryOwner<byte>> ReadRestAsync(Stream source) {
+        MemoryOwner<byte> owner = MemoryOwner<byte>.Allocate((int)(source.Length - source.Position));
+        try {
+            await source.ReadExactlyAsync(owner.Memory);
+        } catch {
+            owner.Dispose();
+            throw;
+        }
+        return owner;
     }
 
     // "Gzip" compression
@@ -82,9 +99,9 @@ class DefaultCompressor : ICompressor {
     private async ValueTask<IMemoryOwner<byte>> GzipDecompress(Stream source, int destinationLength) {
         var owner = MemoryOwner<byte>.Allocate(destinationLength);
         int copied = 0;
-        using var ms = new MemoryStream();
-        await source.CopyToAsync(ms);
-        ms.Position = 0;
+        using MemoryOwner<byte> compressed = await ReadRestAsync(source);
+        ArraySegment<byte> segment = compressed.DangerousGetArray();
+        using var ms = new MemoryStream(segment.Array!, segment.Offset, segment.Count, writable: false);
         using(var gzip = new GZipStream(ms, CompressionMode.Decompress, leaveOpen: true)) {
             copied = await gzip.CopyToAsync(owner.Memory);
         }
@@ -193,10 +210,10 @@ class DefaultCompressor : ICompressor {
 
         using var compressor = new ZstdSharp.Compressor(zLevel);
         ReadOnlySpan<byte> data = source.GetBuffer().AsSpan(0, (int)source.Length);
-        Span<byte> compressed = compressor.Wrap(data);
-        var owner = MemoryOwner<byte>.Allocate(compressed.Length);
-        compressed.CopyTo(owner.Span);
-        return owner;
+        // straight into rented memory of the worst-case size, rather than into an array ZstdSharp allocates per page
+        var owner = MemoryOwner<byte>.Allocate(ZstdSharp.Compressor.GetCompressBound(data.Length));
+        int written = compressor.Wrap(data, owner.Span);
+        return owner.Slice(0, written);
     }
 
     [ThreadStatic]
@@ -244,9 +261,9 @@ class DefaultCompressor : ICompressor {
     }
 
     private async ValueTask<IMemoryOwner<byte>> Lz4Decompress(Stream source, int destinationLength) {
-        byte[] compressed = source.ToByteArray()!;
+        using MemoryOwner<byte> compressed = await ReadRestAsync(source);
         var owner = MemoryOwner<byte>.Allocate(destinationLength);
-        LZ4Codec.Decode(compressed, owner.Span);
+        LZ4Codec.Decode(compressed.Span, owner.Span);
         return owner;
     }
 
