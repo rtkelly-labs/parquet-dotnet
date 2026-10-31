@@ -88,6 +88,9 @@ public class ParquetRowGroupReader : IDisposable {
         // the column's buffers are sized by it
         if(columnChunk.MetaData.NumValues < 0 || columnChunk.MetaData.NumValues > Array.MaxLength)
             throw new ParquetException($"'{field.Path}' has {columnChunk.MetaData.NumValues} values, meaning the file is most probably corrupt");
+        // a column that is not repeated has one value (or null) per row
+        if(field.MaxRepetitionLevel == 0 && columnChunk.MetaData.NumValues > _rowGroup.NumRows)
+            throw new ParquetException($"'{field.Path}' has {columnChunk.MetaData.NumValues} values in a row group of {_rowGroup.NumRows} rows, meaning the file is most probably corrupt");
         return columnChunk.MetaData;
     }
 
