@@ -45,7 +45,9 @@ static class OtherExtensions {
     }
 
     public static int ToUnixDays(this DateTime dto) {
-        TimeSpan diff = dto - UnixEpoch;
+        // the date alone: a whole number of days, so neither truncation toward zero (before 1970) nor a double's
+        // rounding (just before midnight) moves it to the next day
+        TimeSpan diff = dto.Date - UnixEpoch;
         return (int)diff.TotalDays;
     }
 
