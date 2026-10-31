@@ -99,8 +99,17 @@ namespace Lake.Stack {
             var checkPr = new Command("check-pr", "Check a pull request into the stack: its title names the change, and a new change brings its record") { title, prBase, head };
             checkPr.SetAction(parse => Guard(error, () => CheckPrCommand.Run(Context(parse), parse.GetValue(title)!, parse.GetValue(prBase)!, parse.GetValue(head)!)));
 
+            var historyName = new Argument<string>("name") { Description = "stack, or a change's NNNN-name" };
+            var historyShow = new Command("show", "List the published versions of the stack or of one change, newest first") { historyName };
+            historyShow.SetAction(parse => Guard(error, () => HistoryCommand.Show(Context(parse), parse.GetValue(historyName)!)));
+            var historyRemote = new Option<string>("--remote") { Description = "Default: origin", DefaultValueFactory = _ => "origin" };
+            var historyBranch = new Option<string>("--branch") { Description = "The stack branch (default: master)", DefaultValueFactory = _ => "master" };
+            var historyRecord = new Command("record", "Record the remote's stack branch and every change branch as published versions, and push the history") { historyRemote, historyBranch };
+            historyRecord.SetAction(parse => Guard(error, () => HistoryCommand.RecordAll(Context(parse), parse.GetValue(historyRemote)!, parse.GetValue(historyBranch)!)));
+            var history = new Command("history", "Every published version of the stack and of each change (lake/history/*)") { historyShow, historyRecord };
+
             var root = new RootCommand("Keeps Lake.Parquet's change stack on top of upstream (docs/maintaining.md)") {
-                repo, upstream, check, checkPr, status, verify, rebaseline, sync, branches, rewire, promote,
+                repo, upstream, check, checkPr, status, verify, rebaseline, sync, branches, rewire, promote, history,
             };
             return root.Parse(args).Invoke(new InvocationConfiguration { Output = output, Error = error });
         }

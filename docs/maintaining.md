@@ -41,6 +41,7 @@ Keep the GitHub fork relationship: it is what lets a person open a pull request 
 | `lake/change/NNNN-name` | upstream + one change + its `depends_on`, without records | `lake-stack rebaseline --push` (through `lake-stack branches`) | regenerated; never commit to one |
 | `staging/<name>` | a rebaselined stack, built by CI before it may replace `master` (`staging/v0.1.1`) | `lake-stack rebaseline --stage <name>` | force-pushed while staged; deleted when published or aborted |
 | `lake/stack/<date>-<sha>` (tags) | every head `master` moved away from | `lake-stack rebaseline --push` | created, never moved or deleted |
+| `lake/history/stack`, `lake/history/NNNN-name` | every published version of the stack and of each change branch, one record commit each | `lake-stack branches --push`, `promote` (so `rebaseline --push`), `history record` | fast-forward only, never forced or deleted |
 | `lake-v<version>` (tags) | releases | the `lake.yml` publish job | created, never moved |
 | any other branch | work in progress, built on the stack | you | `lake-stack rewire` after each rebaseline |
 
@@ -89,7 +90,9 @@ dotnet test eng/lake/Lake.Stack.Tests # its tests (CI runs them before using it)
 | `branches` | regenerates every `lake/change/*`; `--push origin` force-pushes them and deletes those of retired changes | `lake/change/*` |
 | `rewire [--apply] (<branch>… \| --all)` | moves each branch's own commits onto the current stack; a dry run without `--apply` | the named branches |
 | `verify [NNNN…] [--list]` | proves each code change alone: its branch passes the suite, and the suite fails without its library code (docs/testing.md) | no |
-| `promote --from <old> --to <new>` | the publishing part of `rebaseline --push`: refuses a new stack that fails `check`, tags the old head `lake/stack/<date>-<sha>`, and moves the remote's `master` with a lease on the old head | the remote's `master`, a tag |
+| `promote --from <old> --to <new>` | the publishing part of `rebaseline --push`: refuses a new stack that fails `check`, tags the old head `lake/stack/<date>-<sha>`, and moves the remote's `master` with a lease on the old head | the remote's `master`, a tag, `lake/history/stack` |
+| `history show <stack \| NNNN-name>` | the published versions of the stack or of one change, newest first, and the `git range-diff` that compares the last two | no |
+| `history record` | records the remote's `master` and every local `lake/change/*` as published versions, for a publication made without the tool (a fast-forward of `master` after a staged build) | `lake/history/*` |
 
 `--upstream <ref>` (or `LAKE_UPSTREAM`; default `upstream/master`) sets the upstream every command
 works against, and `--repo <path>` the repository. Exit codes: 0 done, 1 something to fix (a broken
@@ -101,7 +104,7 @@ branches are rebuilt with each source commit's own author, committer and dates, 
 gives the same commit and pushing it again is a no-op.
 
 The code is laid out by command: `Commands/RebaselineCommand.cs`, `VerifyCommand.cs`, `SyncCommand.cs`, `BranchesCommand.cs`, `RewireCommand.cs`,
-`PromoteCommand.cs`, `CheckCommand.cs`, `CheckPrCommand.cs` and `StatusCommand.cs`, over
+`PromoteCommand.cs`, `HistoryCommand.cs`, `CheckCommand.cs`, `CheckPrCommand.cs` and `StatusCommand.cs`, over
 `StackModel.cs` (the commits above upstream and their records), `ChangeRecord.cs` (the record format)
 and `Git.cs` (git, run with an argument list, never through a shell). A change to how the process
 works is a change there, with a test, as a `fixup! lake(0001): …`.
@@ -261,6 +264,28 @@ its record, and open a pull request (a fix to an existing change: `fixup! lake(N
 
 Pending fixups are fine on `master` between rebaselines: `check` reports them, the build includes
 them, and the next rebaseline folds each into its change.
+
+## History of published changes
+
+A change branch is regenerated at each rebaseline, so the branch alone only shows its latest version;
+`master` is rewritten too. Every publication is also recorded, so earlier versions stay reachable and
+comparable without tags:
+
+- `lake/history/NNNN-name` gets a commit each time `lake/change/NNNN-name` is pushed with a new tip;
+  `lake/history/stack` each time `master` is promoted. A record has the published commit's tree, the
+  previous record as its first parent and the published commit as its second (the first record's only
+  parent is the first version).
+- Records only ever fast-forward, so the branches need no force-push and can be protected against one.
+  Recording fetches the remote's history first, so records made from another clone are kept.
+- The change branches themselves are unchanged: still upstream plus one change, the diff an upstream
+  pull request would contain.
+
+```bash
+lake-stack history show 0035-rented-decompression-buffers   # its versions, newest first
+git log --first-parent lake/history/0035-rented-decompression-buffers
+git range-diff <older>...<newer>                             # how the change moved between two versions
+lake-stack history record                                    # after publishing master without the tool
+```
 
 ## Recovering
 

@@ -115,6 +115,11 @@ public static class BranchesCommand {
                 context.Out.WriteLine($"{remote}/{branch} deleted");
             }
         }
+        // every published version stays reachable: lake/history/NNNN-name (HistoryCommand)
+        int versions = result.Built.Count(b => HistoryCommand.Record(git, b[Prefix.Length..], b, remote) != null);
+        if(versions > 0) {
+            context.Out.WriteLine($"{versions} new version(s) recorded under {HistoryCommand.Prefix}");
+        }
         context.Out.WriteLine($"pushed {result.Built.Count} change branch(es) to {remote}");
     }
 }

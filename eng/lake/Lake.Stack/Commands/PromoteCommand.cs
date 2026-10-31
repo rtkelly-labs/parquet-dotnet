@@ -46,6 +46,9 @@ public static class PromoteCommand {
             return ExitCodes.Problems;
         }
         context.Out.WriteLine($"{options.Remote}/{options.Branch}: {from[..10]} (tagged {tag}) -> {to[..10]}");
+        // the old head first, in case it was published before history was kept, then the new one
+        HistoryCommand.Record(git, HistoryCommand.Stack, from, options.Remote);
+        HistoryCommand.Record(git, HistoryCommand.Stack, to, options.Remote);
         return ExitCodes.Ok;
     }
 
