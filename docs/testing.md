@@ -27,7 +27,8 @@ a struct or a map, of any of these kinds:
   `DateTime` and `DateOnly`, and nanosecond timestamps as physical `long` values (`lake(0017)`);
 
 then 1 to 3 row groups of 0 to 200 rows, field IDs on most fields, groups included, and the writer's options:
-compression (none, Snappy, Gzip, Brotli, Zstd; LZ4 too in the reverse direction), statistics on or off,
+compression (none, Snappy, Gzip, Brotli, Zstd; LZ4 too in the reverse direction), statistics on or off, chunks
+split into data pages of 1 to 60 values in half the cases,
 encoding hints per column (dictionary, delta, byte stream split), and in a quarter of cases Parquet modular
 encryption (AES_GCM_V1 or AES_GCM_CTR_V1, encrypted or plaintext footer, keys of 128, 192 or 256 bits, some
 columns with their own key).

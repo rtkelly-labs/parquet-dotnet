@@ -23,6 +23,8 @@ public sealed class Case {
     public required IReadOnlyList<int> RowGroups { get; init; }
     public required CompressionMethod Compression { get; init; }
     public required bool WriteStatistics { get; init; }
+    /// <summary>Data pages of at most about this many values (lake(0043)), or one page per chunk.</summary>
+    public required int? MaxDataPageValues { get; init; }
     public required IReadOnlyDictionary<string, EncodingHint> Hints { get; init; }
     public required CaseEncryption? Encryption { get; init; }
     public required Random Random { get; init; }
@@ -84,6 +86,8 @@ public sealed class Case {
             RowGroups = Enumerable.Range(0, random.Next(1, 4)).Select(_ => random.Next(8) == 0 ? 0 : random.Next(1, 201)).ToList(),
             Compression = Compressions[random.Next(Compressions.Length)],
             WriteStatistics = random.Next(6) != 0,
+            // from its own stream, so every seed's other choices and values stay what they were before the option
+            MaxDataPageValues = new Random(seed ^ 0x5eed_9a9) is var pageRandom && pageRandom.Next(2) == 0 ? null : pageRandom.Next(1, 61),
             Hints = hints,
             Encryption = encryption,
             Random = random,
@@ -95,6 +99,7 @@ public sealed class Case {
         var options = new ParquetOptions {
             CompressionMethod = Compression,
             WriteStatistics = WriteStatistics,
+            MaxDataPageValues = MaxDataPageValues,
         };
         foreach((string path, EncodingHint hint) in Hints) {
             options.ColumnEncodingHints[path] = hint;
@@ -131,7 +136,7 @@ public sealed class Case {
 
     public string Describe() {
         var text = new StringBuilder();
-        text.AppendLine($"seed {Seed}: {RowGroups.Count} row group(s) of [{string.Join(", ", RowGroups)}] rows, {Compression}, statistics {(WriteStatistics ? "on" : "off")}");
+        text.AppendLine($"seed {Seed}: {RowGroups.Count} row group(s) of [{string.Join(", ", RowGroups)}] rows, {Compression}, statistics {(WriteStatistics ? "on" : "off")}, {(MaxDataPageValues is int pages ? $"pages of {pages} values" : "one page per chunk")}");
         if(Encryption is { } e) {
             text.AppendLine($"  encrypted: {(e.PlaintextFooter ? "plaintext" : "encrypted")} footer, {(e.Ctr ? "AES_GCM_CTR_V1" : "AES_GCM_V1")}, column keys for [{string.Join(", ", e.ColumnKeys.Keys)}]");
         }
