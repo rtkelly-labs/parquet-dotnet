@@ -21,7 +21,10 @@ evidence: benchmark   # a performance change: its tests guard behaviour and pass
 ## Evaluation
 
 - **Allocated** per write of 1M strings (1,000 distinct, 10% null), any codec: 28.9 MB to 0.05 MB.
-- **Time and allocation** (`Lake.Parquet.Benchmarks`, write): see the numbers below.
+- **Benchmarks** (`Lake.Parquet.Benchmarks`, `WriteBenchmarks.Strings_HighCardinality`, 1M strings, 500,000
+  distinct, 10% null, into a reused stream): upstream 381 ms and 38.2 MB allocated, the fork with this change
+  340 ms and 10.0 MB (what is left is the definition levels and the page, in rented memory that the run's
+  first pass allocates). Required and nullable numeric writes allocate 8 KB either way.
 
 ## Upstream
 
