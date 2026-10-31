@@ -73,6 +73,10 @@ class DataColumnReader {
         if(_stats?.NullCount != null)
             definedValuesCount -= (int)_stats.NullCount.Value;
 
+        // an empty chunk (a row group of no rows) may have no pages and no page offsets at all (parquet-cpp)
+        if(totalValuesInChunk == 0)
+            return;
+
         long fileOffset = GetFileOffset();
         long pageOffset = fileOffset;
         // encrypted: a page header's AAD depends on whether it is the dictionary page's, which comes first when there is one
