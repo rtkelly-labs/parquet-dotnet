@@ -29,7 +29,11 @@ own AOT consumers. Analyzer-clean is a claim; this makes it a build error to bre
     and key-value metadata; and a file parquet-cpp wrote with what the library never writes itself (page index, bloom
     filters, page checksums, data page v2, sorting columns, column orders, size and page encoding statistics, FLOAT16,
     JSON and UUID columns: `data/lake_metadata_features.parquet`, embedded), read, appended to so that its footer is
-    rewritten, and read again (1,000 checks; enum fields' nullable type is the same natively, and enum columns
+    rewritten, and read again; a second parquet-cpp file of logical types under DELTA_BINARY_PACKED, DELTA_BYTE_ARRAY,
+    DELTA_LENGTH_BYTE_ARRAY and BYTE_STREAM_SPLIT and decimals of precision 1 to 38, which must decode to what its
+    plain-encoded twin decodes to, with decimals as `decimal` and `BigDecimal` and dates as `DateTime` and `DateOnly`;
+    every `DateTimeDataField` format and unit; a 100,003-value boolean column; a one-value dictionary; appends with
+    another schema refused (1,064 checks; enum fields' nullable type is the same natively, and enum columns
     are refused alike: they are the serializer's, which Lake.Parquet leaves out);
   - `cases`: generated cases (every kind and shape, codec, hint, page layout, encryption): values, levels, field IDs,
     row counts and statistics read back exactly;
@@ -59,9 +63,11 @@ publishing the suite with `PublishAot` and `TrimmerSingleWarn=false` analyses th
 reported on its own. Both report none, and the canary step proves they look at uncalled code (it fails with
 `IL3050` and `IL2057`). The native runs then show that the code behaves the same compiled ahead of time.
 
-Coverage is now 87.9% of the package's lines (11,663 of 13,276), with the checks above and with uncalled code left
-out of the package (`lake(0050)`, `lake(0051)`). The wider checks found two upstream bugs, fixed in `lake(0052)` (files
-with a FLOAT16 column could not be opened) and `lake(0053)` (INT96 as `BigInteger` could be neither written nor read).
+Coverage is now 90.2% of the package's lines (11,777 of 13,051), with the checks above and with uncalled code left
+out of the package (`lake(0050)`, `lake(0051)`, `lake(0054)`). The wider checks found three upstream bugs, fixed in
+`lake(0052)` (files with a FLOAT16 column could not be opened), `lake(0053)` (INT96 as `BigInteger` could be neither
+written nor read) and `lake(0055)` (a `DateTime` written as DATE before 1970, or just before midnight, was stored as
+the next day).
 Before those, coverage of the package by the suite's modes (`api`, `cases 1 3000`, `write`/`read 1 1000`, `hashes`, `corpus`), run on
 the JIT build of the same program with `dotnet-coverage` (the assembly instrumented): 56.2% of all lines (11,450 of
 20,378), and 83.3% (11,450 of 13,746) leaving out the big-endian bit-packing kernels (6,632 generated lines that

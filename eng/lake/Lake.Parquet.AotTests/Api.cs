@@ -48,6 +48,11 @@ static class Api {
         await TypedStringsAndBytesAsync();
         await LogicalTypesAsync();
         await OtherWritersMetadataAsync();
+        await OtherWritersEncodingsAsync();
+        await DateTimeFormatsAsync();
+        await LargeBooleanColumnAsync();
+        await SingleValueDictionaryAsync();
+        await AppendWithAnotherSchemaAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -526,6 +531,152 @@ static class Api {
                 }
             }
             Check(read == 200, $"{what}: {read} rows, every column");
+        }
+    }
+
+    static byte[] Resource(string name) {
+        using Stream resource = typeof(Api).Assembly.GetManifestResourceStream(name)!;
+        using var copy = new MemoryStream();
+        resource.CopyTo(copy);
+        return copy.ToArray();
+    }
+
+    /// <summary>
+    /// Encodings and decimals as parquet-cpp (pyarrow 26) writes them, decoded to the column's own CLR type: timestamps,
+    /// dates, int8, uint16 and INT32/INT64 decimals under DELTA_BINARY_PACKED; strings under DELTA_BYTE_ARRAY and
+    /// DELTA_LENGTH_BYTE_ARRAY; float, int, fixed and decimal columns under BYTE_STREAM_SPLIT; decimals of precision 1 to 38
+    /// (INT32, INT64 and FIXED_LEN_BYTE_ARRAY) dictionary-encoded. The same table written plain (the twin) must decode
+    /// to the same values, column by column, with decimals as decimal and as BigDecimal and dates as DateTime and
+    /// DateOnly.
+    /// </summary>
+    static async Task OtherWritersEncodingsAsync() {
+        byte[] encoded = Resource("lake_encodings_other_writers.parquet");
+        byte[] plain = Resource("lake_encodings_plain_twin.parquet");
+        foreach((string what, ParquetOptions options) in new[] {
+            ("defaults", new ParquetOptions()),
+            ("BigDecimal, DateOnly", new ParquetOptions { UseBigDecimal = true, UseDateOnlyTypeForDates = true }) }) {
+            List<(string Column, string Values)> a = await LogicalColumnsAsync(encoded, options);
+            List<(string Column, string Values)> b = await LogicalColumnsAsync(plain, options);
+            Check(a.Count == 24 && b.Count == 24, $"other writers' encodings ({what}): {a.Count} columns");
+            foreach(((string column, string values), (string _, string twin)) in a.Zip(b)) {
+                Check(values == twin && values.Length > 0, $"other writers' encodings ({what}): {column} decodes as its plain twin does");
+            }
+        }
+
+        static async Task<List<(string, string)>> LogicalColumnsAsync(byte[] file, ParquetOptions options) {
+            var result = new List<(string, string)>();
+            await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file), options);
+            foreach(DataField field in reader.Schema.GetDataFields()) {
+                var text = new System.Text.StringBuilder();
+                for(int g = 0; g < reader.RowGroupCount; g++) {
+                    using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(g);
+                    int n = (int)rowGroup.RowCount;
+                    text.Append(field.ClrType switch {
+                        Type t when t == typeof(DateTime) => Join(await ReadNullableAsync<DateTime>(rowGroup, field, n), v => v.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        Type t when t == typeof(DateOnly) => Join(await ReadNullableAsync<DateOnly>(rowGroup, field, n), v => v.DayNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        Type t when t == typeof(decimal) => Join(await ReadNullableAsync<decimal>(rowGroup, field, n), v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        Type t when t == typeof(BigDecimal) => Join(await ReadNullableAsync<BigDecimal>(rowGroup, field, n), v => v.ToString()),
+                        Type t when t == typeof(sbyte) => Join(await ReadNullableAsync<sbyte>(rowGroup, field, n), v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        Type t when t == typeof(ushort) => Join(await ReadNullableAsync<ushort>(rowGroup, field, n), v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        Type t when t == typeof(int) => Join(await ReadNullableAsync<int>(rowGroup, field, n), v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        Type t when t == typeof(long) => Join(await ReadNullableAsync<long>(rowGroup, field, n), v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        Type t when t == typeof(float) => Join(await ReadNullableAsync<float>(rowGroup, field, n), v => v.ToString("R", System.Globalization.CultureInfo.InvariantCulture)),
+                        Type t when t == typeof(ReadOnlyMemory<char>) => await StringsAsync(rowGroup, field, n),
+                        _ => await BytesAsync(rowGroup, field, n),
+                    });
+                }
+                result.Add((field.Name, text.ToString()));
+            }
+            return result;
+        }
+        static string Join<T>(T?[] values, Func<T, string> format) where T : struct => string.Join('|', values.Select(v => v is null ? "null" : format(v.Value)));
+        static async Task<string> StringsAsync(ParquetRowGroupReader rowGroup, DataField field, int n) {
+            var values = new string?[n];
+            await rowGroup.ReadAsync(field, new Memory<string?>(values));
+            return string.Join('|', values.Select(v => v ?? "null"));
+        }
+        static async Task<string> BytesAsync(ParquetRowGroupReader rowGroup, DataField field, int n) {
+            var values = new byte[]?[n];
+            await rowGroup.ReadAsync(field, new Memory<byte[]?>(values));
+            return string.Join('|', values.Select(v => v == null ? "null" : Convert.ToHexString(v)));
+        }
+    }
+
+    /// <summary>Every DateTimeDataField format and unit, nulls included: INT96 (Impala), dates, millis, micros, nanos.</summary>
+    static async Task DateTimeFormatsAsync() {
+        DateTime[] instants = [new DateTime(2024, 2, 29, 23, 59, 59, 999, DateTimeKind.Utc).AddTicks(9_999), new DateTime(1969, 7, 20, 20, 17, 40, DateTimeKind.Utc), DateTime.UnixEpoch];
+        var fields = new (DateTimeDataField Field, Func<DateTime, DateTime> Expected)[] {
+            (new DateTimeDataField("impala", DateTimeFormat.Impala, isNullable: true), d => d),
+            (new DateTimeDataField("date_time", DateTimeFormat.DateAndTime, isNullable: true), d => d.AddTicks(-(d.Ticks % TimeSpan.TicksPerMillisecond))),
+            (new DateTimeDataField("date_time_micros", DateTimeFormat.DateAndTimeMicros, isNullable: true), d => d.AddTicks(-(d.Ticks % 10))),
+            (new DateTimeDataField("date", DateTimeFormat.Date, isNullable: true), d => d.Date),
+            (new DateTimeDataField("ts_millis", DateTimeFormat.Timestamp, unit: DateTimeTimeUnit.Millis, isNullable: true), d => d.AddTicks(-(d.Ticks % TimeSpan.TicksPerMillisecond))),
+            (new DateTimeDataField("ts_micros", DateTimeFormat.Timestamp, unit: DateTimeTimeUnit.Micros, isNullable: true), d => d.AddTicks(-(d.Ticks % 10))),
+            (new DateTimeDataField("ts_nanos", DateTimeFormat.Timestamp, unit: DateTimeTimeUnit.Nanos, isNullable: true), d => d),
+            (new DateTimeDataField("ts_local", DateTimeFormat.Timestamp, isAdjustedToUTC: false, unit: DateTimeTimeUnit.Micros, isNullable: true), d => d.AddTicks(-(d.Ticks % 10))),
+        };
+        DateTime?[] values = [instants[0], null, instants[1], instants[2]];
+        byte[] file = await WriteAsync(new ParquetSchema(fields.Select(f => (Field)f.Field).ToArray()), new ParquetOptions(), async rg => {
+            foreach((DateTimeDataField field, _) in fields) {
+                await rg.WriteAsync<DateTime>(field, values);
+            }
+        });
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        DataField[] read = reader.Schema.GetDataFields();
+        for(int i = 0; i < fields.Length; i++) {
+            DateTime?[] got = await ReadNullableAsync<DateTime>(rowGroup, read[i], values.Length);
+            DateTime?[] expected = values.Select(v => v is null ? (DateTime?)null : fields[i].Expected(v.Value)).ToArray();
+            Check(got.Select(g => g?.Ticks).SequenceEqual(expected.Select(e => e?.Ticks)), $"DateTime as {fields[i].Field.Name}: {string.Join(", ", got.Select(g => g?.ToString("O") ?? "null"))}");
+        }
+    }
+
+    /// <summary>A boolean column long enough for the vectorised bit-packing path, with nulls.</summary>
+    static async Task LargeBooleanColumnAsync() {
+        var field = new DataField<bool?>("flag");
+        var r = new Random(7);
+        bool?[] values = Enumerable.Range(0, 100_003).Select(i => i % 13 == 0 ? (bool?)null : r.Next(2) == 1).ToArray();
+        byte[] file = await WriteAsync(new ParquetSchema(field), new ParquetOptions(), rg => rg.WriteAsync<bool>(field, values));
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        Check(SequenceEqual(await ReadNullableAsync<bool>(rowGroup, reader.Schema.GetDataFields()[0], values.Length), values), "100,003 booleans with nulls");
+    }
+
+    /// <summary>A dictionary of one value: indexes of bit width 0.</summary>
+    static async Task SingleValueDictionaryAsync() {
+        var field = new DataField<string>("same");
+        string?[] values = Enumerable.Repeat<string?>("only", 500).ToArray();
+        var options = new ParquetOptions();
+        options.ColumnEncodingHints["same"] = EncodingHint.Dictionary;
+        byte[] file = await WriteAsync(new ParquetSchema(field), options, rg => rg.WriteAsync(field, values));
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        var read = new string?[values.Length];
+        await rowGroup.ReadAsync(reader.Schema.GetDataFields()[0], new Memory<string?>(read));
+        Check(rowGroup.RowGroup.Columns[0].MetaData!.DictionaryPageOffset != null && SequenceEqual(read, values), "dictionary of one value");
+    }
+
+    /// <summary>Appending with a schema that differs from the file's is refused, saying how it differs.</summary>
+    static async Task AppendWithAnotherSchemaAsync() {
+        var id = new DataField<int>("id");
+        var name = new DataField<string>("name");
+        byte[] file = await WriteAsync(new ParquetSchema(id, name), new ParquetOptions(), async rg => {
+            await rg.WriteAsync<int>(id, new[] { 1 });
+            await rg.WriteAsync(name, new string?[] { "a" });
+        });
+        foreach((string what, ParquetSchema other) in new[] {
+            ("fewer fields", new ParquetSchema(id)),
+            ("another name", new ParquetSchema(id, new DataField<string>("title"))),
+            ("another type", new ParquetSchema(id, new DataField<long>("name"))),
+            ("another nullability", new ParquetSchema(id, new DataField<string>("name", nullable: false))) }) {
+            using var stream = new MemoryStream();
+            stream.Write(file);
+            try {
+                await using ParquetWriter writer = await ParquetWriter.CreateAsync(other, stream, append: true);
+                Check(false, $"append with {what}: accepted");
+            } catch(ParquetException e) {
+                Check(e.Message.Contains("does not match", StringComparison.Ordinal), $"append with {what}: refused with '{e.Message}'");
+            }
         }
     }
 
