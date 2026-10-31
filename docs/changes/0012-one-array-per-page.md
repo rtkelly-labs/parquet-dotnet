@@ -3,6 +3,7 @@ title: "Byte-array and text values: one array per page"
 kind: code
 status: fork-only
 depends_on: []
+evidence: benchmark   # a performance change: its tests guard behaviour and pass either way
 upstream_unit: "10b"
 ---
 
