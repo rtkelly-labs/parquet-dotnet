@@ -41,6 +41,10 @@ static class ByteStreamSplitEncoder {
     }
 
     public static void Decode<T>(Span<byte> s, Span<T> dest) where T : struct {
+        if(typeof(T) == typeof(short) || typeof(T) == typeof(ushort)) {
+            DecodeNarrow(s, dest);
+            return;
+        }
         if(ParquetOptions.UseHardwareAcceleration) {
             DecodeHwx(s, dest);
         } else {
@@ -173,6 +177,11 @@ static class ByteStreamSplitEncoder {
     public static void Encode<T>(ReadOnlySpan<T> source, Stream dest) where T : struct {
         ArgumentNullException.ThrowIfNull(dest);
 
+        if(typeof(T) == typeof(short) || typeof(T) == typeof(ushort)) {
+            EncodeWide(source, dest);
+            return;
+        }
+
         int k = SafeSizeOf<T>();
 
         /*
@@ -210,6 +219,56 @@ static class ByteStreamSplitEncoder {
             }
         } finally {
             ArrayPool<byte>.Shared.Return(chunk);
+        }
+    }
+
+    /// <summary>
+    /// short and ushort are stored as INT32, so their streams are four bytes wide, as for int: sign- or
+    /// zero-extended to int first. Splitting their two in-memory bytes gave streams other readers reject.
+    /// </summary>
+    private static void EncodeWide<T>(ReadOnlySpan<T> source, Stream dest) where T : struct {
+        int[] wide = ArrayPool<int>.Shared.Rent(source.Length);
+        try {
+            Widen(source, wide.AsSpan(0, source.Length));
+            Encode<int>(wide.AsSpan(0, source.Length), dest);
+        } finally {
+            ArrayPool<int>.Shared.Return(wide);
+        }
+    }
+
+    /// <summary>Decodes INT32 streams into short or ushort values.</summary>
+    private static void DecodeNarrow<T>(Span<byte> s, Span<T> dest) where T : struct {
+        int[] wide = ArrayPool<int>.Shared.Rent(dest.Length);
+        try {
+            Span<int> values = wide.AsSpan(0, dest.Length);
+            Decode(s, values);
+            if(typeof(T) == typeof(short)) {
+                Span<short> shorts = MemoryMarshal.Cast<T, short>(dest);
+                for(int i = 0; i < values.Length; i++) {
+                    shorts[i] = unchecked((short)values[i]);
+                }
+            } else {
+                Span<ushort> ushorts = MemoryMarshal.Cast<T, ushort>(dest);
+                for(int i = 0; i < values.Length; i++) {
+                    ushorts[i] = unchecked((ushort)values[i]);
+                }
+            }
+        } finally {
+            ArrayPool<int>.Shared.Return(wide);
+        }
+    }
+
+    private static void Widen<T>(ReadOnlySpan<T> source, Span<int> wide) where T : struct {
+        if(typeof(T) == typeof(short)) {
+            ReadOnlySpan<short> shorts = MemoryMarshal.Cast<T, short>(source);
+            for(int i = 0; i < shorts.Length; i++) {
+                wide[i] = shorts[i];
+            }
+        } else {
+            ReadOnlySpan<ushort> ushorts = MemoryMarshal.Cast<T, ushort>(source);
+            for(int i = 0; i < ushorts.Length; i++) {
+                wide[i] = ushorts[i];
+            }
         }
     }
 }
