@@ -1,0 +1,95 @@
+name: Lake.Parquet benchmarks
+
+# BenchmarkDotNet, upstream against the fork, on one runner (Lake.NET docs/lake-parquet/testing.md, "Benchmarks").
+# Shared runners are noisy, so this informs decisions and records rather than gating anything: it is not part of
+# lake-ci. It runs on every staging branch, so a rebaselined stack's performance is seen before it is published, and
+# on demand. The comparison is the job summary; the BenchmarkDotNet reports are an artifact.
+
+on:
+  push:
+    branches: ["staging/**"]
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "BenchmarkDotNet --filter (default: every benchmark)"
+        required: false
+        default: "*"
+        type: string
+      job:
+        description: "BenchmarkDotNet job: short (quicker, noisier) or medium"
+        required: false
+        default: "short"
+        type: choice
+        options: [short, medium]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+
+jobs:
+  compare:
+    name: upstream vs fork
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      # the upstream commit this stack is built on, in its own worktree: the baseline every change is measured against
+      - name: Check out the upstream base
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/aloneguid/parquet-dotnet.git
+          git fetch --quiet upstream master
+          base=$(git merge-base HEAD upstream/master)
+          git worktree add --quiet --detach "$RUNNER_TEMP/upstream" "$base"
+          echo "BASE=$base" >> "$GITHUB_ENV"
+
+      - name: Benchmark upstream
+        working-directory: eng/lake/Lake.Parquet.Benchmarks
+        env:
+          ParquetProject: ${{ runner.temp }}/upstream/src/Parquet/Parquet.csproj
+          FILTER: ${{ inputs.filter || '*' }}
+          JOB: ${{ inputs.job || 'short' }}
+        run: dotnet run -c Release -- --filter "$FILTER" --job "$JOB" --exporters json --artifacts "$RUNNER_TEMP/bench/upstream"
+
+      - name: Benchmark the fork
+        working-directory: eng/lake/Lake.Parquet.Benchmarks
+        env:
+          FILTER: ${{ inputs.filter || '*' }}
+          JOB: ${{ inputs.job || 'short' }}
+        run: dotnet run -c Release -- --filter "$FILTER" --job "$JOB" --exporters json --artifacts "$RUNNER_TEMP/bench/fork"
+
+      - name: Compare
+        run: |
+          set -euo pipefail
+          {
+            echo "## BenchmarkDotNet: upstream ${BASE:0:10} against the fork ${GITHUB_SHA:0:10}"
+            echo
+            echo "Ratios are the fork's to upstream's (below 1 is faster or smaller). One shared runner, ${{ inputs.job || 'short' }} job: compare runs of the same workflow, not single numbers."
+            echo
+            dotnet run eng/lake/CompareBenchmarks.cs -- "$RUNNER_TEMP/bench/upstream/results" "$RUNNER_TEMP/bench/fork/results" upstream fork
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: benchmarks
+          path: ${{ runner.temp }}/bench
+          if-no-files-found: ignore
