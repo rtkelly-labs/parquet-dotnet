@@ -1207,6 +1207,18 @@ static class ParquetPlainEncoder {
         }
     }
 
+    private const long UnixEpochTicks = 621_355_968_000_000_000;   // 1970-01-01T00:00:00Z
+
+    private static void UnixToDateTimes(ReadOnlySpan<long> values, Span<DateTime> data, long ticksPerUnit, DateTimeKind kind) {
+        for(int i = 0; i < values.Length; i++)
+            data[i] = new DateTime(checked(UnixEpochTicks + values[i] * ticksPerUnit), kind);
+    }
+
+    private static void UnixNanosToDateTimes(ReadOnlySpan<long> values, Span<DateTime> data, DateTimeKind kind) {
+        for(int i = 0; i < values.Length; i++)
+            data[i] = new DateTime(checked(UnixEpochTicks + values[i] / TimeSpan.NanosecondsPerTick), kind);
+    }
+
     public static int Decode(Span<byte> source, Span<DateTime> data, SchemaElement tse) {
         switch(tse.Type) {
             case TType.INT32:
@@ -1214,7 +1226,7 @@ static class ParquetPlainEncoder {
                 try {
                     int intsRead = Decode(source, ints.AsSpan(0, data.Length));
                     for(int i = 0; i < intsRead; i++)
-                        data[i] = ints[i].AsUnixDaysInDateTime();
+                        data[i] = new DateTime(checked(UnixEpochTicks + ints[i] * TimeSpan.TicksPerDay), DateTimeKind.Utc);
                     return intsRead;
                 } finally {
                     ArrayPool<int>.Shared.Return(ints);
@@ -1223,40 +1235,23 @@ static class ParquetPlainEncoder {
                 long[] longs = ArrayPool<long>.Shared.Rent(data.Length);
                 try {
                     int longsRead = Decode(source, longs.AsSpan(0, data.Length));
-                    if(tse.LogicalType?.TIMESTAMP is not null) {
-                        for(int i = 0; i < longsRead; i++) {
-                            if(tse.LogicalType.TIMESTAMP.Unit.MILLIS is not null) {
-                                DateTime dt = longs[i].AsUnixMillisecondsInDateTime();
-                                dt = DateTime.SpecifyKind(dt, tse.LogicalType.TIMESTAMP.IsAdjustedToUTC ? DateTimeKind.Utc : DateTimeKind.Local);
-                                data[i] = dt;
-                            } else if(tse.LogicalType.TIMESTAMP.Unit.MICROS is not null) {
-                                long lv = longs[i];
-                                long microseconds = lv % 1000;
-                                lv /= 1000;
-                                DateTime dt = lv.AsUnixMillisecondsInDateTime().AddTicks(microseconds * 10);
-                                dt = DateTime.SpecifyKind(dt, tse.LogicalType.TIMESTAMP.IsAdjustedToUTC ? DateTimeKind.Utc : DateTimeKind.Local);
-                                data[i] = dt;
-                            } else if(tse.LogicalType.TIMESTAMP.Unit.NANOS is not null) {
-                                long lv = longs[i];
-                                long nanoseconds = lv % 1000000;
-                                lv /= 1000000;
-                                DateTime dt = lv.AsUnixMillisecondsInDateTime().AddTicks(nanoseconds / 100); // 1 tick = 100 nanoseconds
-                                dt = DateTime.SpecifyKind(dt, tse.LogicalType.TIMESTAMP.IsAdjustedToUTC ? DateTimeKind.Utc : DateTimeKind.Local);
-                                data[i] = dt;
-                            } else {
-                                throw new ParquetException($"Unexpected TimeUnit: {tse.LogicalType.TIMESTAMP.Unit}");
-                            }
-                        }
+                    ReadOnlySpan<long> values = longs.AsSpan(0, longsRead);
+                    // the unit and kind once per page, and each value straight to ticks: the same DateTime as
+                    // epoch.AddMilliseconds(ms).AddTicks(rest) then SpecifyKind, at a fraction of the cost
+                    if(tse.LogicalType?.TIMESTAMP is { } timestamp) {
+                        DateTimeKind kind = timestamp.IsAdjustedToUTC ? DateTimeKind.Utc : DateTimeKind.Local;
+                        if(timestamp.Unit.MILLIS is not null)
+                            UnixToDateTimes(values, data, TimeSpan.TicksPerMillisecond, kind);
+                        else if(timestamp.Unit.MICROS is not null)
+                            UnixToDateTimes(values, data, TimeSpan.TicksPerMicrosecond, kind);
+                        else if(timestamp.Unit.NANOS is not null)
+                            UnixNanosToDateTimes(values, data, kind);
+                        else
+                            throw new ParquetException($"Unexpected TimeUnit: {timestamp.Unit}");
                     } else if(tse.IsTimestampMicros()) {
-                        for(int i = 0; i < longsRead; i++) {
-                            long lv = longs[i];
-                            long microseconds = lv % 1000;
-                            lv /= 1000;
-                            data[i] = lv.AsUnixMillisecondsInDateTime().AddTicks(microseconds * 10);
-                        }
+                        UnixToDateTimes(values, data, TimeSpan.TicksPerMicrosecond, DateTimeKind.Utc);
                     } else {
-                        for(int i = 0; i < longsRead; i++)
-                            data[i] = longs[i].AsUnixMillisecondsInDateTime();
+                        UnixToDateTimes(values, data, TimeSpan.TicksPerMillisecond, DateTimeKind.Utc);
                     }
                     return longsRead;
                 } finally {
