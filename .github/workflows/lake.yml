@@ -299,6 +299,29 @@ jobs:
           -p:CustomBeforeMicrosoftCommonTargets="$GITHUB_WORKSPACE/eng/lake/Lake.Parquet.targets"
           -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$GITHUB_WORKSPACE/eng/lake/Lake.Parquet.targets"
 
+      # The analyzers check every method of the package, not only what the suite runs: a method nothing calls that
+      # constructs a generic type from a runtime type name must fail the Lake build (Lake.NET testing.md, "Native AOT").
+      - name: The analyzers fail the build on code nothing calls
+        if: runner.os == 'Linux'
+        run: |
+          set -uo pipefail
+          canary="$RUNNER_TEMP/canary"
+          cp -r "$RUNNER_TEMP/lake" "$canary"
+          cat > "$canary/src/Parquet/LakeCanary.cs" <<'CS'
+          namespace Lake.Parquet;
+          internal static class LakeCanary {
+              internal static object? Make(string typeName) =>
+                  System.Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(System.Type.GetType(typeName)!));
+          }
+          CS
+          targets="$GITHUB_WORKSPACE/eng/lake/Lake.Parquet.targets"
+          if dotnet build "$canary/src/Parquet/Parquet.csproj" -c Release -p:CustomBeforeMicrosoftCommonTargets="$targets" -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$targets" > "$RUNNER_TEMP/canary.log" 2>&1; then
+            echo "::error::the Lake build accepted an uncalled method that needs dynamic code: the AOT analyzers are not on"
+            exit 1
+          fi
+          grep -q "LakeCanary.cs.*error IL3050" "$RUNNER_TEMP/canary.log" || { cat "$RUNNER_TEMP/canary.log"; echo "::error::the canary build failed, but not with IL3050"; exit 1; }
+          echo "the analyzers refused the uncalled canary: $(grep -oE 'error IL[0-9]+' "$RUNNER_TEMP/canary.log" | sort -u | tr '\n' ' ')"
+
   # The whole suite on the plain build, serializer included. The build job tests the renamed package, which
   # leaves the serializer and its tests out; this keeps every test that also covers other code (encryption,
   # the test-file corpus, legacy lists) running against the fork's code.
