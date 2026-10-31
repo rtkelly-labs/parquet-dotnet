@@ -1,4 +1,5 @@
-﻿using System;
+﻿using System.Diagnostics.CodeAnalysis;
+using System;
 
 namespace Parquet.Schema;
 
@@ -35,7 +36,7 @@ public class DecimalDataField : DataField {
     public DecimalDataField(string name,
         int precision, int scale = 0,
         bool forceByteArrayEncoding = false,
-        bool? isNullable = null, bool? isArray = null, string? propertyName = null, Type? clrType = null)
+        bool? isNullable = null, bool? isArray = null, string? propertyName = null, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type? clrType = null)
        : base(name, clrType ?? typeof(decimal), isNullable, isArray, propertyName) {
 
         // see https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#decimal for more details.

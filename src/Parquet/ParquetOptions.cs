@@ -1,4 +1,5 @@
-﻿using System;
+﻿using System.Diagnostics.CodeAnalysis;
+using System;
 using System.Collections.Generic;
 using System.IO.Compression;
 using Parquet.Data;
@@ -120,6 +121,7 @@ public class ParquetOptions {
     /// <summary>Keys for reading files with Parquet modular encryption.</summary>
     public Encryption.ParquetDecryptionOptions? Decryption { get; set; }
 
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
     internal Type DecimalType => UseBigDecimal ? typeof(BigDecimal) : typeof(decimal);
 
     /// <summary>

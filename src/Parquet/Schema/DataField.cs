@@ -1,4 +1,5 @@
-﻿using System;
+﻿using System.Diagnostics.CodeAnalysis;
+using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Numerics;
@@ -94,7 +95,7 @@ public class DataField : Field, ICloneable {
     /// When set, uses this property to get the field's data. When not set, uses the property that matches the name
     /// parameter.
     /// </param>
-    public DataField(string name, Type clrType, bool? isNullable = null, bool? isArray = null, string? propertyName = null)
+    public DataField(string name, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type clrType, bool? isNullable = null, bool? isArray = null, string? propertyName = null)
        : base(name, SchemaType.Data) {
 
         Discover(clrType, out Type baseType, out bool discIsArray, out bool discIsNullable);
@@ -184,7 +185,7 @@ public class DataField : Field, ICloneable {
 
     #region [ Type Resolution ]
 
-    private static void Discover(Type t, out Type baseType, out bool isArray, out bool isNullable) {
+    private static void Discover([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type t, out Type baseType, out bool isArray, out bool isNullable) {
         baseType = t;
         isArray = false;
         isNullable = false;

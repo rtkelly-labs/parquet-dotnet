@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System;
 
 namespace Parquet.Schema;
@@ -30,6 +31,7 @@ public class TimeDataField : DataField {
     /// </summary>
     public TimeUnitPrecision Precision { get; }
     
+    [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
     private static Type GetUnitType(TimeUnitPrecision precision) =>
         precision switch {
             TimeUnitPrecision.Millis => typeof(int),

@@ -1,4 +1,5 @@
-﻿using System;
+﻿using System.Diagnostics.CodeAnalysis;
+using System;
 using Parquet.Meta;
 using Type = System.Type;
 
@@ -60,7 +61,7 @@ public sealed class ListField : Field {
     /// <param name="elementName">Element name</param>
     /// <param name="isNullable"></param>
     public ListField(string name,
-        Type itemDataType,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type itemDataType,
         string? propertyName = null,
         string containerName = "list",
         string? elementName = null,

@@ -204,6 +204,68 @@ jobs:
 
   # The single required check.
   # Generated cases, both directions, against parquet-cpp (Lake.NET docs/lake-parquet/testing.md, "The conformance harness").
+  # Lake.Parquet under native AOT (Lake.NET docs/lake-parquet/testing.md, "Native AOT"): the package as published
+  # (members stripped, renamed, IsAotCompatible), with the regression suite published by PublishAot, every trimming
+  # and AOT warning an error, then checked against the same suite on the JIT.
+  aot:
+    name: aot
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Native AOT prerequisites
+        run: sudo apt-get install --yes --no-install-recommends clang zlib1g-dev
+
+      - name: Strip and rename a copy to Lake.Parquet
+        run: |
+          set -euo pipefail
+          rsync -a --exclude .git ./ "$RUNNER_TEMP/lake/"
+          dotnet run eng/lake/StripMembers.cs -- "$RUNNER_TEMP/lake" eng/lake/strip-members.json
+          dotnet run eng/lake/RenameNamespace.cs -- "$RUNNER_TEMP/lake/src" Parquet Lake.Parquet
+          dotnet run eng/lake/RenameNamespace.cs -- "$RUNNER_TEMP/lake/eng/lake" Parquet Lake.Parquet
+
+      - name: Build the suite on the JIT, and publish it with native AOT
+        working-directory: ${{ runner.temp }}/lake/eng/lake/Lake.Parquet.AotTests
+        env:
+          ParquetProject: ${{ runner.temp }}/lake/src/Parquet/Parquet.csproj
+        run: |
+          set -euo pipefail
+          hooks=(-p:CustomBeforeMicrosoftCommonTargets="$LAKE_TARGETS" -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$LAKE_TARGETS")
+          dotnet build -c Release "${hooks[@]}"
+          dotnet publish -c Release -r linux-x64 -o "$RUNNER_TEMP/aot" "${hooks[@]}"
+
+      - name: Run the suite natively, and against the JIT
+        working-directory: ${{ runner.temp }}/lake/eng/lake/Lake.Parquet.AotTests
+        run: |
+          set -euo pipefail
+          native="$RUNNER_TEMP/aot/Lake.Parquet.AotTests"
+          jit=(dotnet bin/Release/net10.0/Lake.Parquet.AotTests.dll)
+          corpus="$RUNNER_TEMP/lake/src/Parquet.Test/data"
+          out="$RUNNER_TEMP/aot-results"
+          mkdir -p "$out"
+          "$native" api
+          "$native" cases 1 3000
+          "$native" cases $(( (GITHUB_RUN_ID % 100000) * 10000 + 2000000 )) 2000       # fresh seeds every run
+          "${jit[@]}" write 1 1000 "$out/jit-files" && "$native" read 1 1000 "$out/jit-files"
+          "$native" write 1 1000 "$out/native-files" && "${jit[@]}" read 1 1000 "$out/native-files"
+          "${jit[@]}" hashes 1 1000 > "$out/jit-hashes.txt"
+          "$native" hashes 1 1000 > "$out/native-hashes.txt"
+          diff "$out/jit-hashes.txt" "$out/native-hashes.txt"
+          echo "$(wc -l < "$out/native-hashes.txt") files byte for byte the JIT build's"
+          "${jit[@]}" corpus "$corpus" > "$out/jit-corpus.txt"
+          "$native" corpus "$corpus" > "$out/native-corpus.txt"
+          diff "$out/jit-corpus.txt" "$out/native-corpus.txt"
+          echo "$(wc -l < "$out/native-corpus.txt") corpus files decoded alike"
+
   # The whole suite on the plain build, serializer included. The build job tests the renamed package, which
   # leaves the serializer and its tests out; this keeps every test that also covers other code (encryption,
   # the test-file corpus, legacy lists) running against the fork's code.
@@ -345,7 +407,7 @@ jobs:
   lake-ci:
     name: lake-ci
     if: always()
-    needs: [stack, build, suite, conformance, changes, verify]
+    needs: [stack, build, suite, aot, conformance, changes, verify]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job that ran
@@ -356,7 +418,7 @@ jobs:
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           failed=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")')
           [ -z "$failed" ] || { echo "::error::did not succeed: $failed"; exit 1; }
-          for required in stack build suite conformance; do
+          for required in stack build suite aot conformance; do
             [ "$(echo "$RESULTS" | jq -r ".$required.result")" = "success" ] || { echo "::error::$required did not succeed"; exit 1; }
           done
 

@@ -45,6 +45,12 @@
     <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Parquet' and '$(LakeKeepSerializer)' != 'true'">
         <!-- ParquetOptions' docs link to ParquetSerializer for its serializer-only options -->
         <NoWarn>$(NoWarn);CS1574</NoWarn>
+        <!--
+          The trimming and AOT analyzers, as errors (the project treats warnings as errors): with the serializer left
+          out, Lake.Parquet has no finding, and a change that adds one fails the build. Lake.Parquet.AotTests proves it
+          under native AOT.
+        -->
+        <IsAotCompatible>true</IsAotCompatible>
     </PropertyGroup>
     <ItemGroup Condition="'$(MSBuildProjectName)' == 'Parquet' and '$(LakeKeepSerializer)' != 'true'">
         <Compile Remove="Serialization\ParquetSerializer.cs;Serialization\ParquetClrSchemaExtensions.cs;Serialization\Dremel\**;Extensions\ExpressionExtensions.cs;Utils\FileMerger.cs" />
