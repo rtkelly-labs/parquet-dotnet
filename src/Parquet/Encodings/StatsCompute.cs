@@ -142,16 +142,14 @@ static class StatsCompute {
     /// unit order differs only where a surrogate meets a code unit from U+E000 to U+FFFF.
     /// </summary>
     internal static int CompareCodePoints(ReadOnlySpan<char> a, ReadOnlySpan<char> b) {
-        int n = Math.Min(a.Length, b.Length);
-        for(int i = 0; i < n; i++) {
-            char x = a[i], y = b[i];
-            if(x == y)
-                continue;
-            if(x >= 0xD800 && y >= 0xD800)
-                return Fixup(x).CompareTo(Fixup(y));
-            return x.CompareTo(y);
-        }
-        return a.Length.CompareTo(b.Length);
+        // the first difference: most strings differ in their first char; past it, found vectorised
+        int i = a.Length > 0 && b.Length > 0 && a[0] != b[0] ? 0 : a.CommonPrefixLength(b);
+        if(i == a.Length || i == b.Length)
+            return a.Length.CompareTo(b.Length);
+        char x = a[i], y = b[i];
+        if(x >= 0xD800 && y >= 0xD800)
+            return Fixup(x).CompareTo(Fixup(y));
+        return x.CompareTo(y);
 
         // surrogates (D800-DFFF) sort after E000-FFFF
         static int Fixup(char c) => c >= 0xE000 ? c - 0x800 : c + 0x2000;
