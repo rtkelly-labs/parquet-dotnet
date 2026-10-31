@@ -762,33 +762,57 @@ static class ParquetPlainEncoder {
         return Math.Min(data.Length, source.Length / Unsafe.SizeOf<T>());
     }
 
+    private static readonly ulong[] PowersOfTen = {
+        1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000, 10_000_000_000,
+        100_000_000_000, 1_000_000_000_000, 10_000_000_000_000, 100_000_000_000_000, 1_000_000_000_000_000,
+        10_000_000_000_000_000, 100_000_000_000_000_000, 1_000_000_000_000_000_000 };
+
+    /// <summary>
+    /// The unscaled integer an INT32/INT64-backed decimal column stores for <paramref name="value"/>: the value times
+    /// 10^scale, truncated. From the value's bits when it has no more than <paramref name="scale"/> decimal places and
+    /// fits, which is the usual case and costs a multiplication of integers; otherwise by decimal arithmetic, as before.
+    /// </summary>
+    internal static long ToUnscaled(decimal value, int scale, SchemaElement tse) {
+        Span<int> bits = stackalloc int[4];
+        decimal.GetBits(value, bits);
+        int valueScale = (bits[3] >> 16) & 0xFF;
+        if(bits[2] == 0 && valueScale <= scale && scale - valueScale < PowersOfTen.Length) {
+            ulong magnitude = ((ulong)(uint)bits[1] << 32) | (uint)bits[0];
+            ulong factor = PowersOfTen[scale - valueScale];
+            if(magnitude <= long.MaxValue / factor) {
+                long unscaled = (long)(magnitude * factor);
+                return bits[3] < 0 ? -unscaled : unscaled;
+            }
+        }
+        try {
+            return (long)(value * (decimal)Math.Pow(10, scale));
+        } catch(OverflowException) {
+            throw TooLarge(value, tse);
+        }
+    }
+
+    private static ParquetException TooLarge(decimal value, SchemaElement tse) =>
+        new ParquetException($"value '{value}' is too large to fit into scale {tse.Scale} and precision {tse.Precision}");
+
     public static void Encode(ReadOnlySpan<decimal> data, Stream destination, SchemaElement tse) {
         switch(tse.Type) {
-            case TType.INT32:
-                double scaleFactor32 = Math.Pow(10, tse.Scale ?? 0);
-                Span<byte> buf4 = stackalloc byte[4];
-                foreach(decimal d in data)
-                    try {
-                        int i = (int)(d * (decimal)scaleFactor32);
-                        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf4, i);
-                        destination.Write(buf4);
-                    } catch(OverflowException) {
-                        throw new ParquetException(
-                           $"value '{d}' is too large to fit into scale {tse.Scale} and precision {tse.Precision}");
+            case TType.INT32: {
+                    int scale = tse.Scale ?? 0;
+                    using var w = new ValueWriter(destination);
+                    foreach(decimal d in data) {
+                        long unscaled = ToUnscaled(d, scale, tse);
+                        if(unscaled < int.MinValue || unscaled > int.MaxValue)
+                            throw TooLarge(d, tse);
+                        w.Write((int)unscaled);
                     }
+                }
                 break;
-            case TType.INT64:
-                double sf64 = Math.Pow(10, tse.Scale ?? 0);
-                Span<byte> buf8 = stackalloc byte[8];
-                foreach(decimal d in data)
-                    try {
-                        long l = (long)(d * (decimal)sf64);
-                        System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(buf8, l);
-                        destination.Write(buf8);
-                    } catch(OverflowException) {
-                        throw new ParquetException(
-                           $"value '{d}' is too large to fit into scale {tse.Scale} and precision {tse.Precision}");
-                    }
+            case TType.INT64: {
+                    int scale = tse.Scale ?? 0;
+                    using var w = new ValueWriter(destination);
+                    foreach(decimal d in data)
+                        w.Write(ToUnscaled(d, scale, tse));
+                }
                 break;
             case TType.FIXED_LEN_BYTE_ARRAY:
                 Span<byte> decBuf = stackalloc byte[16];
