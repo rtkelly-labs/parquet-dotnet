@@ -13,7 +13,9 @@ using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 
 const string Root = "Lake.Parquet";
-string[] absent = ["Lake.Parquet.Serialization.ParquetSerializer", "Lake.Parquet.Serialization.ParquetClrSchemaExtensions", "Lake.Parquet.Serialization.Dremel.Striper`1", "Lake.Parquet.Serialization.Dremel.Assembler`1"];
+string[] absent = ["Lake.Parquet.Serialization.ParquetSerializer", "Lake.Parquet.Serialization.ParquetClrSchemaExtensions", "Lake.Parquet.Serialization.Dremel.Striper`1", "Lake.Parquet.Serialization.Dremel.Assembler`1", "Lake.Parquet.Utils.FileMerger"];
+// members StripMembers.cs leaves out (eng/lake/strip-members.json): one per entry's type and name is enough
+string[] absentMembers = ["Lake.Parquet.ParquetRowGroupReader::ReadRawColumnDataBaseAsync", "Lake.Parquet.Schema.MapField::CreateSimpleDictionary", "Lake.Parquet.Extensions.ParquetClrSchemaExtensions::CreateGenericList", "Lake.Parquet.Extensions.ParquetClrSchemaExtensions::IsAssignableToGenericType"];
 string[] present = ["Lake.Parquet.Serialization.Attributes.ParquetDecimalAttribute", "Lake.Parquet.Serialization.Attributes.ParquetRequiredAttribute", "Lake.Parquet.Serialization.Attributes.ParquetIgnoreAttribute", "Lake.Parquet.Serialization.Attributes.ParquetTimestampAttribute"];
 
 if (args.Length == 0)
@@ -43,7 +45,11 @@ foreach (string path in args)
         .Select(h => md.GetTypeDefinition(h))
         .Select(t => $"{md.GetString(t.Namespace)}.{md.GetString(t.Name)}")
         .ToHashSet(StringComparer.Ordinal);
-    List<string> unwanted = absent.Where(types.Contains).ToList();
+    HashSet<string> members = md.TypeDefinitions
+        .Select(h => md.GetTypeDefinition(h))
+        .SelectMany(t => t.GetMethods().Select(m => $"{md.GetString(t.Namespace)}.{md.GetString(t.Name)}::{md.GetString(md.GetMethodDefinition(m).Name)}"))
+        .ToHashSet(StringComparer.Ordinal);
+    List<string> unwanted = absent.Where(types.Contains).Concat(absentMembers.Where(members.Contains)).ToList();
     List<string> missing = present.Where(t => !types.Contains(t)).ToList();
     if (unwanted.Count > 0 || missing.Count > 0)
     {
