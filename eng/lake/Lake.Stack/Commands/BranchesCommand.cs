@@ -67,12 +67,21 @@ public static class BranchesCommand {
         return new BranchesResult(built, failed, deleted);
     }
 
+    /// <summary>
+    /// Whether a cherry-pick stopped only on records: a commit that edits its record with its code (a fixup of both)
+    /// finds no record in a change branch. The records are dropped below, so the code alone has applied.
+    /// </summary>
+    static bool OnlyRecordsConflict(Git tree) {
+        IReadOnlyList<string> conflicted = tree.Lines("diff", "--name-only", "--diff-filter=U");
+        return conflicted.Count > 0 && conflicted.All(f => f.StartsWith(ChangeRecord.Directory + "/", StringComparison.Ordinal));
+    }
+
     /// <summary>Applies one stack commit without its record, keeping its message, author and committer.</summary>
     internal static bool Replay(Git tree, StackCommit commit) {
         if(commit.OnlyRecords) {
             return true;   // a change branch carries no records: nothing to apply
         }
-        if(tree.TryRun("cherry-pick", "--no-commit", commit.Sha).ExitCode != 0) {
+        if(tree.TryRun("cherry-pick", "--no-commit", commit.Sha).ExitCode != 0 && !OnlyRecordsConflict(tree)) {
             tree.TryRun("cherry-pick", "--abort");
             tree.TryRun("reset", "--quiet", "--hard");
             return false;

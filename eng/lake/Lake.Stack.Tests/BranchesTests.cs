@@ -83,4 +83,20 @@ public class BranchesTests {
         Assert.Equal(["fixup! lake(0002): Fix A", "lake(0002): Fix A"], repo.Fork.Lines("log", "--format=%s", "upstream/master..lake/change/0002-fix-a"));
         Assert.Single(repo.Fork.Lines("log", "--format=%s", "upstream/master..lake/change/0003-fix-b"));
     }
+
+    [Fact]
+    public void A_fixup_of_code_and_record_together_is_in_its_changes_branch_without_the_record() {
+        using var repo = new TestRepo();
+        repo.AddChange("0002", "fix-a", "Fix A", files: ("src/A.cs", TestRepo.Lines("a", 20, (3, "fixed"))));
+        TestRepo.Commit(repo.Fork, "fixup! lake(0002): Fix A",
+            ("src/A.cs", TestRepo.Lines("a", 20, (3, "fixed better"))),
+            ("docs/changes/0002-fix-a.md", TestRepo.Record("Fix A", status: "proposed-upstream")));
+
+        BranchesResult result = BranchesCommand.Build(repo.Context(), "HEAD", null);
+
+        Assert.Empty(result.Failed);
+        Assert.Contains("fixed better", repo.Fork.Run("show", "lake/change/0002-fix-a:src/A.cs"));
+        Assert.Empty(repo.Fork.Lines("ls-tree", "-r", "--name-only", "lake/change/0002-fix-a", "--", "docs/changes"));
+        Assert.Equal(["fixup! lake(0002): Fix A", "lake(0002): Fix A"], repo.Fork.Lines("log", "--format=%s", "upstream/master..lake/change/0002-fix-a"));
+    }
 }
