@@ -247,11 +247,7 @@ static class SchemaEncoder {
             return options.DecimalType;
         }
 
-        // --- float16
-
-        if(se.LogicalType?.FLOAT16 != null) {
-            return typeof(System.Half);
-        }
+        // --- float16: no CLR mapping writes or reads System.Half, so the column is read as its FIXED_LEN_BYTE_ARRAY(2) bytes
 
         // --- temporal types
 
