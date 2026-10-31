@@ -389,18 +389,24 @@ static class ParquetPlainEncoder {
         };
     }
 
+    /// <summary>
+    /// The decimal an INT32/INT64-backed column stores as <paramref name="unscaled"/> times 10^-scale, built from its
+    /// bits: exact on every runtime, and cheaper than a decimal multiplication. Multiplying by a power of ten
+    /// converted from double was exact only while the runtime rounded double-to-decimal conversions to 15 digits;
+    /// from .NET 11 that factor carries the double's error into every value.
+    /// </summary>
+    internal static decimal Unscaled(long unscaled, int scale) {
+        bool negative = unscaled < 0;
+        ulong magnitude = negative ? unchecked((ulong)-(unscaled + 1)) + 1 : (ulong)unscaled;
+        return new decimal(unchecked((int)(uint)magnitude), unchecked((int)(uint)(magnitude >> 32)), 0, negative, (byte)scale);
+    }
+
     private static object TryDecodeDecimal(byte[] value, SchemaElement tse) {
         switch(tse.Type) {
             case TType.INT32:
-                decimal iscaleFactor = (decimal)Math.Pow(10, -tse.Scale!.Value);
-                int iv = BitConverter.ToInt32(value, 0);
-                decimal idv = iv * iscaleFactor;
-                return idv;
+                return Unscaled(BitConverter.ToInt32(value, 0), tse.Scale ?? 0);
             case TType.INT64:
-                decimal lscaleFactor = (decimal)Math.Pow(10, -tse.Scale!.Value);
-                long lv = BitConverter.ToInt64(value, 0);
-                decimal ldv = lv * lscaleFactor;
-                return ldv;
+                return Unscaled(BitConverter.ToInt64(value, 0), tse.Scale ?? 0);
             case TType.FIXED_LEN_BYTE_ARRAY:
                 return new BigDecimal(value, tse);
             default:
@@ -811,24 +817,24 @@ static class ParquetPlainEncoder {
     public static int Decode(Span<byte> source, Span<decimal> data, SchemaElement tse) {
         switch(tse.Type) {
             case TType.INT32: {
-                    decimal scaleFactor = (decimal)Math.Pow(10, -tse.Scale ?? 0);
+                    byte scale = (byte)(tse.Scale ?? 0);
                     int[] ints = ArrayPool<int>.Shared.Rent(data.Length);
                     try {
                         Decode(source, ints.AsSpan(0, data.Length));
                         for(int i = 0; i < data.Length; i++)
-                            data[i] = ints[i] * scaleFactor;
+                            data[i] = Unscaled(ints[i], scale);
                         return data.Length;
                     } finally {
                         ArrayPool<int>.Shared.Return(ints);
                     }
                 }
             case TType.INT64: {
-                    decimal scaleFactor = (decimal)Math.Pow(10, -tse.Scale ?? 0);
+                    byte scale = (byte)(tse.Scale ?? 0);
                     long[] longs = ArrayPool<long>.Shared.Rent(data.Length);
                     try {
                         Decode(source, longs.AsSpan(0, data.Length));
                         for(int i = 0; i < data.Length; i++)
-                            data[i] = longs[i] * scaleFactor;
+                            data[i] = Unscaled(longs[i], scale);
                         return data.Length;
                     } finally {
                         ArrayPool<long>.Shared.Return(longs);
@@ -874,24 +880,24 @@ static class ParquetPlainEncoder {
     public static int Decode(Span<byte> source, Span<BigDecimal> data, SchemaElement tse) {
         switch(tse.Type) {
             case TType.INT32: {
-                    decimal scaleFactor = (decimal)Math.Pow(10, -tse.Scale ?? 0);
+                    byte scale = (byte)(tse.Scale ?? 0);
                     int[] ints = ArrayPool<int>.Shared.Rent(data.Length);
                     try {
                         Decode(source, ints.AsSpan(0, data.Length));
                         for(int i = 0; i < data.Length; i++)
-                            data[i] = BigDecimal.FromDecimal(ints[i] * scaleFactor, tse.Precision, tse.Scale);
+                            data[i] = BigDecimal.FromDecimal(Unscaled(ints[i], scale), tse.Precision, tse.Scale);
                         return data.Length;
                     } finally {
                         ArrayPool<int>.Shared.Return(ints);
                     }
                 }
             case TType.INT64: {
-                    decimal scaleFactor = (decimal)Math.Pow(10, -tse.Scale ?? 0);
+                    byte scale = (byte)(tse.Scale ?? 0);
                     long[] longs = ArrayPool<long>.Shared.Rent(data.Length);
                     try {
                         Decode(source, longs.AsSpan(0, data.Length));
                         for(int i = 0; i < data.Length; i++)
-                            data[i] = BigDecimal.FromDecimal(longs[i] * scaleFactor, tse.Precision, tse.Scale);
+                            data[i] = BigDecimal.FromDecimal(Unscaled(longs[i], scale), tse.Precision, tse.Scale);
                         return data.Length;
                     } finally {
                         ArrayPool<long>.Shared.Return(longs);
