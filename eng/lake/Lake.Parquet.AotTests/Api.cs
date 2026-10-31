@@ -1,7 +1,9 @@
 using Parquet;
 using Parquet.Data;
 using Parquet.Encryption;
+using Parquet.File.Values.Primitives;
 using Parquet.Schema;
+using PMeta = Parquet.Meta;
 
 /// <summary>
 /// The calls Parquet.SourceGenerator's generated readers and writers make, each round-tripped and checked: typed
@@ -34,6 +36,12 @@ static class Api {
         await EncryptedAsync();
         await StatisticsAsync();
         await EnumsRefusedAsync();
+        await BitWidthsAsync();
+        await DictionaryIndexWidthsAsync();
+        await RawColumnsAsync();
+        await UnseekableOutputAsync();
+        await MoreTypesAsync();
+        await SchemaAndMetadataAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -177,6 +185,178 @@ static class Api {
         } catch(InvalidOperationException e) {
             Check(e.Message.Contains("not supported", StringComparison.Ordinal), $"enum column: refused with '{e.Message}'");
         }
+    }
+
+    /// <summary>
+    /// Every bit width the delta encoder packs and unpacks (0 to 32 for int, 0 to 64 for long): each column alternates
+    /// around a value so that its deltas span exactly that many bits. The bit-packing kernels are generated per width, so
+    /// a width no column reaches is code the native build never ran.
+    /// </summary>
+    static async Task BitWidthsAsync() {
+        for(int w = 0; w <= 64; w++) {
+            long span = w == 0 ? 0 : w == 64 ? long.MaxValue : (1L << (w - 1)) - 1;
+            long[] longs = Enumerable.Range(0, 300).Select(i => w switch {
+                0 => 7L * i,                           // constant deltas: width 0
+                1 => i / 2,                            // deltas 0 and 1
+                _ => i % 2 == 0 ? 0L : span            // deltas +span and -span
+            }).ToArray();
+            await RoundTripAsync(new DataField<long>("l"), longs, $"delta long, width {w}");
+            if(w <= 32) {
+                int[] ints = longs.Select(v => (int)Math.Min(v, int.MaxValue)).ToArray();   // width 32: deltas of int.MaxValue
+                await RoundTripAsync(new DataField<int>("i"), ints, $"delta int, width {w}");
+            }
+        }
+
+        static async Task RoundTripAsync<T>(DataField<T> field, T[] values, string what) where T : struct {
+            var options = new ParquetOptions();
+            options.ColumnEncodingHints[field.Path.ToString()] = EncodingHint.DeltaBinaryPacked;
+            byte[] file = await WriteAsync(new ParquetSchema(field), options, rg => rg.WriteAsync<T>(field, values));
+            await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            Check(SequenceEqual(await ReadAsync<T>(rowGroup, reader.Schema.GetDataFields()[0], values.Length), values), what);
+        }
+    }
+
+    /// <summary>
+    /// Dictionary indexes of every width from 1 to 16 bits (RLE/bit-packed hybrid): string columns (the writer
+    /// dictionary-encodes strings) of 2^w distinct values, each twice.
+    /// </summary>
+    static async Task DictionaryIndexWidthsAsync() {
+        for(int w = 1; w <= 16; w++) {
+            int distinct = 1 << w;
+            string?[] values = Enumerable.Range(0, distinct * 2).Select(i => "v" + (i * 7919 % distinct)).ToArray();
+            var field = new DataField<string>("d");
+            var options = new ParquetOptions();
+            options.ColumnEncodingHints[field.Path.ToString()] = EncodingHint.Dictionary;
+            byte[] file = await WriteAsync(new ParquetSchema(field), options, rg => rg.WriteAsync(field, values));
+            await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            bool dictionary = rowGroup.RowGroup.Columns[0].MetaData!.DictionaryPageOffset != null;
+            var read = new string?[values.Length];
+            await rowGroup.ReadAsync(reader.Schema.GetDataFields()[0], new Memory<string?>(read));
+            Check(dictionary && SequenceEqual(read, values),
+                $"dictionary of {distinct} values (index width {w}): {(dictionary ? "dictionary-encoded" : "not dictionary-encoded")}");
+        }
+    }
+
+    /// <summary>
+    /// Columns declared by their physical type (RawDataField), as Lake.NET's backend writes Iceberg columns: a
+    /// TIMESTAMP(NANOS) as long nanoseconds, a DATE as int days, a fixed[4] as FIXED_LEN_BYTE_ARRAY(4), a STRING.
+    /// </summary>
+    static async Task RawColumnsAsync() {
+        var nanos = new RawDataField("ts", PMeta.Type.INT64, false,
+            new PMeta.LogicalType { TIMESTAMP = new PMeta.TimestampType { IsAdjustedToUTC = true, Unit = new PMeta.TimeUnit { NANOS = new PMeta.NanoSeconds() } } });
+        var days = new RawDataField("day", PMeta.Type.INT32, true, new PMeta.LogicalType { DATE = new PMeta.DateType() });
+        var fixed4 = new RawDataField("f", PMeta.Type.FIXED_LEN_BYTE_ARRAY, false, typeLength: 4);
+        var text = new RawDataField("s", PMeta.Type.BYTE_ARRAY, true, new PMeta.LogicalType { STRING = new PMeta.StringType() });
+        long[] ns = [1_700_000_000_123_456_789, -1, 0];
+        int?[] dayValues = [19_000, null, -5];
+        byte[][] fixedValues = [[1, 2, 3, 4], [0, 0, 0, 0], [255, 254, 253, 252]];
+        string?[] texts = ["a", null, "ü"];
+        byte[] file = await WriteAsync(new ParquetSchema(nanos, days, fixed4, text), new ParquetOptions(), async rg => {
+            await rg.WriteAsync<long>(nanos, ns);
+            await rg.WriteAsync<int>(days, dayValues);
+            await rg.WriteAsync(fixed4, fixedValues);
+            await rg.WriteAsync(text, texts);
+        });
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        DataField[] f = reader.Schema.GetDataFields();
+        Check(SequenceEqual(await ReadAsync<long>(rowGroup, f[0], 3), ns), "raw TIMESTAMP(NANOS) as long nanoseconds");
+        Check(SequenceEqual(await ReadNullableAsync<int>(rowGroup, f[1], 3), dayValues), "raw DATE as int days");
+        var readFixed = new byte[]?[3];
+        await rowGroup.ReadAsync(f[2], new Memory<byte[]?>(readFixed));
+        Check(f[2].FixedLength == 4 && readFixed.Zip(fixedValues).All(p => p.First!.SequenceEqual(p.Second)), "raw FIXED_LEN_BYTE_ARRAY(4)");
+        var readTexts = new string?[3];
+        await rowGroup.ReadAsync(f[3], new Memory<string?>(readTexts));
+        Check(SequenceEqual(readTexts, texts), "raw STRING");
+    }
+
+    /// <summary>Writing to a stream that cannot seek (a network or pipe stream): the writer meters its own position.</summary>
+    static async Task UnseekableOutputAsync() {
+        var field = new DataField<int>("v");
+        int[] values = Enumerable.Range(0, 1000).ToArray();
+        using var inner = new MemoryStream();
+        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(new ParquetSchema(field), new ForwardOnlyStream(inner))) {
+            for(int g = 0; g < 2; g++) {
+                using ParquetRowGroupWriter rg = writer.CreateRowGroup();
+                await rg.WriteAsync<int>(field, values);
+            }
+        }
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(inner.ToArray()));
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(1);
+        Check(reader.RowGroupCount == 2 && SequenceEqual(await ReadAsync<int>(rowGroup, reader.Schema.GetDataFields()[0], values.Length), values),
+            "written to a stream that cannot seek");
+    }
+
+    /// <summary>
+    /// The types the typed-column checks leave out: 16-bit and unsigned integers under DELTA_BINARY_PACKED (their own
+    /// generated delta kernels), Interval and BigDecimal; each read back, with its statistics.
+    /// </summary>
+    static async Task MoreTypesAsync() {
+        await RoundTripAsync<short>(new DataField<short>("s"), [short.MinValue, -1, 0, 1, short.MaxValue, 7], EncodingHint.DeltaBinaryPacked);
+        await RoundTripAsync<ushort>(new DataField<ushort>("us"), [0, 1, ushort.MaxValue, 300, 7, 2], EncodingHint.DeltaBinaryPacked);
+        await RoundTripAsync<uint>(new DataField<uint>("ui"), [0, 1, uint.MaxValue, 300, 7, 2], EncodingHint.DeltaBinaryPacked);
+        await RoundTripAsync<Interval>(new DataField<Interval>("iv"), [new Interval(1, 2, 3), new Interval(0, 0, 0), new Interval(12, 31, 86_399_999)], EncodingHint.Default);
+
+        var big = new DecimalDataField("bd", 38, 4, clrType: typeof(BigDecimal));
+        BigDecimal[] bigs = [BigDecimal.FromDecimal(12345.6789m, 38, 4), BigDecimal.FromDecimal(-1m, 38, 4), new BigDecimal(System.Numerics.BigInteger.Pow(10, 37), 38, 4)];
+        byte[] file = await WriteAsync(new ParquetSchema(big), new ParquetOptions(), rg => rg.WriteAsync<BigDecimal>(big, bigs));
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file), new ParquetOptions { UseBigDecimal = true });
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        BigDecimal[] read = await ReadAsync<BigDecimal>(rowGroup, reader.Schema.GetDataFields()[0], bigs.Length);
+        Check(read.Select(b => b.ToString()).SequenceEqual(bigs.Select(b => b.ToString())), $"BigDecimal(38,4): {string.Join(", ", read.Select(b => b.ToString()))}");
+
+        static async Task RoundTripAsync<T>(DataField field, T[] values, EncodingHint hint) where T : struct {
+            var options = new ParquetOptions();
+            options.ColumnEncodingHints[field.Path.ToString()] = hint;
+            byte[] file = await WriteAsync(new ParquetSchema(field), options, rg => rg.WriteAsync<T>(field, values));
+            await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            DataField read = reader.Schema.GetDataFields()[0];
+            Check(SequenceEqual(await ReadAsync<T>(rowGroup, read, values.Length), values), $"{typeof(T).Name} ({hint})");
+            Check(rowGroup.GetStatistics(read) is { NullCount: 0 }, $"{typeof(T).Name} ({hint}): statistics");
+        }
+    }
+
+    /// <summary>The schema API (lookup, equality, flattening) and custom key-value metadata, file and column level.</summary>
+    static async Task SchemaAndMetadataAsync() {
+        var id = new DataField<int>("id");
+        var name = new DataField<string>("name");
+        var schema = new ParquetSchema(id, new StructField("s", name));
+        int[] ids = [1, 2];
+        byte[] file;
+        using(var ms = new MemoryStream()) {
+            await using(ParquetWriter writer = await ParquetWriter.CreateAsync(schema, ms)) {
+                writer.CustomMetadata = new Dictionary<string, string> { ["writer"] = "lake" };
+                using ParquetRowGroupWriter rg = writer.CreateRowGroup();
+                await rg.WriteAsync<int>(id, ids);
+                await rg.WriteAsync(name, new string?[] { "a", null });
+            }
+            file = ms.ToArray();
+        }
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+        ParquetSchema read = reader.Schema;
+        Check(read.Equals(schema) && read.GetHashCode() == schema.GetHashCode(), "schema read back equals the one written");
+        Check(!read.Equals(new ParquetSchema(id)) && read.GetNotEqualsMessage(new ParquetSchema(id), "file", "expected").Length > 0, "schema inequality is reported");
+        Check(read.FindDataField(new FieldPath("s", "name")) is { Name: "name" } && read.FindDataField("id") is { Name: "id" } && read.DataFields.Length == 2 && read[0].Name == "id", "schema lookup");
+        Check(read.Flatten().Count() >= 3, "schema flattened");
+        Check(reader.CustomMetadata.TryGetValue("writer", out string? v) && v == "lake", "file key-value metadata");
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        Check(rowGroup.ColumnExists(read.DataFields[0]) && rowGroup.GetCustomMetadata(read.DataFields[0]).Count == 0, "column lookup and column metadata");
+    }
+
+    sealed class ForwardOnlyStream(Stream inner) : Stream {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() => inner.Flush();
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => inner.Write(buffer, offset, count);
     }
 
     static async Task<T[]> ReadAsync<T>(ParquetRowGroupReader rowGroup, DataField field, int n) where T : struct {
