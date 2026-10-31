@@ -42,6 +42,12 @@ static class Api {
         await UnseekableOutputAsync();
         await MoreTypesAsync();
         await SchemaAndMetadataAsync();
+        await UnsignedStatisticsAsync();
+        await DecimalOutOfRangeAsync();
+        await Int96AsBigIntegerAsync();
+        await TypedStringsAndBytesAsync();
+        await LogicalTypesAsync();
+        await OtherWritersMetadataAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -344,6 +350,183 @@ static class Api {
         Check(reader.CustomMetadata.TryGetValue("writer", out string? v) && v == "lake", "file key-value metadata");
         using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
         Check(rowGroup.ColumnExists(read.DataFields[0]) && rowGroup.GetCustomMetadata(read.DataFields[0]).Count == 0, "column lookup and column metadata");
+    }
+
+    /// <summary>INT32 and INT64 columns with an unsigned INTEGER annotation: statistics in unsigned order.</summary>
+    static async Task UnsignedStatisticsAsync() {
+        var u32 = new RawDataField("u32", PMeta.Type.INT32, false, new PMeta.LogicalType { INTEGER = new PMeta.IntType { BitWidth = 32, IsSigned = false } });
+        var u64 = new RawDataField("u64", PMeta.Type.INT64, false, new PMeta.LogicalType { INTEGER = new PMeta.IntType { BitWidth = 64, IsSigned = false } });
+        int[] ints = [1, -1, 7];            // -1 is uint.MaxValue: the maximum in unsigned order
+        long[] longs = [1L, -1L, 7L];
+        byte[] file = await WriteAsync(new ParquetSchema(u32, u64), new ParquetOptions(), async rg => {
+            await rg.WriteAsync<int>(u32, ints);
+            await rg.WriteAsync<long>(u64, longs);
+        });
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        DataField[] f = reader.Schema.GetDataFields();
+        DataColumnStatistics? s32 = rowGroup.GetStatistics(f[0]);
+        DataColumnStatistics? s64 = rowGroup.GetStatistics(f[1]);
+        Check(s32?.SortOrder == ColumnSortOrder.Unsigned && Equals(s32.PhysicalMin, 1) && Equals(s32.PhysicalMax, -1),
+            $"unsigned INT32 statistics: {s32?.SortOrder} {s32?.PhysicalMin} .. {s32?.PhysicalMax}");
+        Check(s64?.SortOrder == ColumnSortOrder.Unsigned && Equals(s64.PhysicalMin, 1L) && Equals(s64.PhysicalMax, -1L),
+            $"unsigned INT64 statistics: {s64?.SortOrder} {s64?.PhysicalMin} .. {s64?.PhysicalMax}");
+    }
+
+    /// <summary>A decimal too large for its column's precision is refused, not written wrong.</summary>
+    static async Task DecimalOutOfRangeAsync() {
+        var field = new DecimalDataField("d", 18, 2);
+        try {
+            await WriteAsync(new ParquetSchema(field), new ParquetOptions(), rg => rg.WriteAsync<decimal>(field, new[] { decimal.MaxValue }));
+            Check(false, "decimal(18,2) of decimal.MaxValue: written");
+        } catch(ParquetException e) {
+            Check(e.Message.Length > 0, "decimal(18,2) of decimal.MaxValue: refused");
+        }
+    }
+
+    /// <summary>INT96 read as BigInteger when timestamps are not wanted (TreatBigIntegersAsDates off).</summary>
+    static async Task Int96AsBigIntegerAsync() {
+        var field = new DataField<System.Numerics.BigInteger>("i96");
+        System.Numerics.BigInteger[] values = [0, 1, -1, System.Numerics.BigInteger.Pow(2, 90)];
+        byte[] file = await WriteAsync(new ParquetSchema(field), new ParquetOptions { TreatBigIntegersAsDates = false }, rg => rg.WriteAsync<System.Numerics.BigInteger>(field, values));
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file), new ParquetOptions { TreatBigIntegersAsDates = false });
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        Check(SequenceEqual(await ReadAsync<System.Numerics.BigInteger>(rowGroup, reader.Schema.GetDataFields()[0], values.Length), values), "INT96 as BigInteger");
+    }
+
+    /// <summary>
+    /// Strings and byte arrays written from and read into .NET's own types (string, byte[]), plain and
+    /// dictionary-encoded, with their statistics. (ParquetOptions.PreferUntypedString/ByteArray are the serializer's,
+    /// which Lake.Parquet leaves out: core fields are always untyped memory underneath.)
+    /// </summary>
+    static async Task TypedStringsAndBytesAsync() {
+        var s = new DataField<string>("s");
+        var b = new DataField<byte[]>("b");
+        string?[] texts = ["x", null, "żółw"];
+        byte[]?[] blobs = [[1], null, [2, 3]];
+        foreach(EncodingHint hint in new[] { EncodingHint.Default, EncodingHint.Dictionary }) {
+            var options = new ParquetOptions();
+            options.ColumnEncodingHints["s"] = hint;
+            byte[] file = await WriteAsync(new ParquetSchema(s, b), options, async rg => {
+                await rg.WriteAsync(s, texts);
+                await rg.WriteAsync(b, blobs);
+            });
+            await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            DataField[] f = reader.Schema.GetDataFields();
+            var readTexts = new string?[3];
+            await rowGroup.ReadAsync(f[0], new Memory<string?>(readTexts));
+            var readBlobs = new byte[]?[3];
+            await rowGroup.ReadAsync(f[1], new Memory<byte[]?>(readBlobs));
+            Check(SequenceEqual(readTexts, texts) && readBlobs.Zip(blobs).All(p => p.First == null ? p.Second == null : p.Second != null && p.First.SequenceEqual(p.Second))
+                && rowGroup.GetStatistics(f[0]) is { NullCount: 1 }, $"string and byte[] ({hint})");
+        }
+    }
+
+    /// <summary>
+    /// Every logical type a column can be declared with (RawDataField), written and read back with its annotation:
+    /// ENUM, JSON, BSON, FLOAT16, GEOMETRY, GEOGRAPHY, TIME, UNKNOWN (always null).
+    /// </summary>
+    static async Task LogicalTypesAsync() {
+        var fields = new (RawDataField Field, string What)[] {
+            (new RawDataField("enum", PMeta.Type.BYTE_ARRAY, false, new PMeta.LogicalType { ENUM = new PMeta.EnumType() }), "ENUM"),
+            (new RawDataField("json", PMeta.Type.BYTE_ARRAY, false, new PMeta.LogicalType { JSON = new PMeta.JsonType() }), "JSON"),
+            (new RawDataField("bson", PMeta.Type.BYTE_ARRAY, false, new PMeta.LogicalType { BSON = new PMeta.BsonType() }), "BSON"),
+            (new RawDataField("f16", PMeta.Type.FIXED_LEN_BYTE_ARRAY, false, new PMeta.LogicalType { FLOAT16 = new PMeta.Float16Type() }, typeLength: 2), "FLOAT16"),
+            (new RawDataField("geom", PMeta.Type.BYTE_ARRAY, false, new PMeta.LogicalType { GEOMETRY = new PMeta.GeometryType { Crs = "OGC:CRS84" } }), "GEOMETRY"),
+            (new RawDataField("geog", PMeta.Type.BYTE_ARRAY, false, new PMeta.LogicalType { GEOGRAPHY = new PMeta.GeographyType { Crs = "OGC:CRS84", Algorithm = PMeta.EdgeInterpolationAlgorithm.SPHERICAL } }), "GEOGRAPHY"),
+            (new RawDataField("time", PMeta.Type.INT64, false, new PMeta.LogicalType { TIME = new PMeta.TimeType { IsAdjustedToUTC = true, Unit = new PMeta.TimeUnit { MICROS = new PMeta.MicroSeconds() } } }), "TIME"),
+            (new RawDataField("unknown", PMeta.Type.INT32, true, new PMeta.LogicalType { UNKNOWN = new PMeta.NullType() }), "UNKNOWN"),
+        };
+        byte[] wkbPoint = [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        byte[] file = await WriteAsync(new ParquetSchema(fields.Select(f => (Field)f.Field).ToArray()), new ParquetOptions(), async rg => {
+            await rg.WriteAsync(fields[0].Field, new string?[] { "RED", "GREEN" });
+            await rg.WriteAsync(fields[1].Field, new string?[] { "{}", "[1]" });
+            await rg.WriteAsync(fields[2].Field, new byte[]?[] { [5, 0, 0, 0, 0], [5, 0, 0, 0, 0] });
+            await rg.WriteAsync(fields[3].Field, new byte[]?[] { [0, 0x3c], [0, 0xc0] });
+            await rg.WriteAsync(fields[4].Field, new byte[]?[] { wkbPoint, wkbPoint });
+            await rg.WriteAsync(fields[5].Field, new byte[]?[] { wkbPoint, wkbPoint });
+            await rg.WriteAsync<long>(fields[6].Field, new long[] { 0, 86_399_999_999 });
+            await rg.WriteAsync<int>(fields[7].Field, new int?[] { null, null });
+        });
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+        for(int i = 0; i < fields.Length; i++) {
+            PMeta.LogicalType? lt = reader.Metadata!.Schema[i + 1].LogicalType;
+            bool kept = fields[i].What switch {
+                "ENUM" => lt?.ENUM != null, "JSON" => lt?.JSON != null, "BSON" => lt?.BSON != null, "FLOAT16" => lt?.FLOAT16 != null,
+                "GEOMETRY" => lt?.GEOMETRY?.Crs == "OGC:CRS84",
+                "GEOGRAPHY" => lt?.GEOGRAPHY is { Crs: "OGC:CRS84", Algorithm: PMeta.EdgeInterpolationAlgorithm.SPHERICAL },
+                "TIME" => lt?.TIME?.Unit?.MICROS != null, "UNKNOWN" => lt?.UNKNOWN != null, _ => false
+            };
+            Check(kept, $"logical type {fields[i].What} written and read back");
+        }
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        Check(rowGroup.RowCount == 2, "logical types: rows");
+    }
+
+    /// <summary>
+    /// A file parquet-cpp (pyarrow 26) wrote with everything the library does not write itself: a page index, bloom
+    /// filters, page checksums, data page v2, sorting columns, column orders, size statistics and page encoding
+    /// statistics, FLOAT16, JSON and UUID columns (all optional, pyarrow's default). Read; then appended to, which rewrites its footer with all of that
+    /// metadata, and read again.
+    /// </summary>
+    static async Task OtherWritersMetadataAsync() {
+        byte[] original;
+        using(Stream resource = typeof(Api).Assembly.GetManifestResourceStream("lake_metadata_features.parquet")!) {
+            using var copy = new MemoryStream();
+            await resource.CopyToAsync(copy);
+            original = copy.ToArray();
+        }
+        await CheckAsync(original, "parquet-cpp file", 2);
+
+        using var appended = new MemoryStream();
+        appended.Write(original);
+        ParquetSchema schema;
+        await using(ParquetReader r = await ParquetReader.CreateAsync(new MemoryStream(original))) {
+            schema = r.Schema;
+        }
+        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(schema, appended, append: true)) {
+        }
+        await CheckAsync(appended.ToArray(), "parquet-cpp file, footer rewritten by an append", 2);
+
+        static async Task CheckAsync(byte[] file, string what, int rowGroups) {
+            await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+            PMeta.FileMetaData md = reader.Metadata!;
+            PMeta.ColumnChunk chunk = md.RowGroups[0].Columns[0];
+            Check(md.RowGroups.Count == rowGroups && md.RowGroups[0].SortingColumns is { Count: 1 } && md.ColumnOrders is { Count: > 0 }
+                && chunk.MetaData!.EncodingStats is { Count: > 0 } && chunk.ColumnIndexOffset != null && chunk.OffsetIndexOffset != null
+                && chunk.MetaData.BloomFilterOffset != null,
+                $"{what}: metadata (sorting columns, column orders, encoding stats, page index and bloom filter offsets)");
+            Check(md.RowGroups.Any(g => g.Columns.Any(c => c.MetaData?.SizeStatistics != null)), $"{what}: size statistics");
+            DataField[] f = reader.Schema.GetDataFields();
+            int read = 0;
+            for(int g = 0; g < reader.RowGroupCount; g++) {
+                using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(g);
+                int n = (int)rowGroup.RowCount;
+                long?[] ids = await ReadNullableAsync<long>(rowGroup, f[0], n);
+                var halves = new byte[]?[n];
+                await rowGroup.ReadAsync(f[1], new Memory<byte[]?>(halves));
+                var jsonBytes = new byte[]?[n];      // JSON is read as its UTF-8 bytes
+                await rowGroup.ReadAsync(f[2], new Memory<byte[]?>(jsonBytes));
+                string?[] json = jsonBytes.Select(j => j == null ? null : System.Text.Encoding.UTF8.GetString(j)).ToArray();
+                Guid?[] uuids = await ReadNullableAsync<Guid>(rowGroup, f[3], n);
+                double?[] doubles = await ReadNullableAsync<double>(rowGroup, f[4], n);
+                var strings = new string?[n];
+                await rowGroup.ReadAsync(f[5], new Memory<string?>(strings));
+                int?[] optional = await ReadNullableAsync<int>(rowGroup, f[6], n);
+                for(int i = 0; i < n; i++, read++) {
+                    long id = ids[i] ?? -1;
+                    bool ok = id == read && BitConverter.ToHalf(halves[i]!) == (Half)id && json[i] == $"{{\"k\":{id}}}"
+                        && uuids[i] == new Guid(new byte[16 - 8].Concat(BitConverter.GetBytes(id).Reverse()).ToArray(), bigEndian: true)
+                        && doubles[i] == id / 3.0 && strings[i] == $"v{id % 17}" && optional[i] == (id % 5 == 0 ? null : (int)id);
+                    if(!ok) {
+                        Check(false, $"{what}: row {read}");
+                        return;
+                    }
+                }
+            }
+            Check(read == 200, $"{what}: {read} rows, every column");
+        }
     }
 
     sealed class ForwardOnlyStream(Stream inner) : Stream {

@@ -23,8 +23,13 @@ own AOT consumers. Analyzer-clean is a claim; this makes it a build error to bre
     GUIDs, statistics, under every codec, every encoding hint, one page or several per chunk, and modular encryption;
     every bit width the generated bit-packing kernels have (0 to 32 for int, 0 to 64 for long, through
     DELTA_BINARY_PACKED) and dictionary indexes of 1 to 16 bits; 16-bit and unsigned integers under delta, `Interval`
-    and `BigDecimal`; columns declared by physical type (`RawDataField`); writing to a stream that cannot seek; the
-    schema API and key-value metadata (979 checks; enum fields' nullable type is the same natively, and enum columns
+    and `BigDecimal`; columns declared by physical type (`RawDataField`) with every logical type (ENUM, JSON, BSON,
+    FLOAT16, GEOMETRY, GEOGRAPHY, TIME, UNKNOWN) and unsigned statistics; decimals too large for their precision
+    refused; INT96 as `BigInteger`; `string` and `byte[]` values; writing to a stream that cannot seek; the schema API
+    and key-value metadata; and a file parquet-cpp wrote with what the library never writes itself (page index, bloom
+    filters, page checksums, data page v2, sorting columns, column orders, size and page encoding statistics, FLOAT16,
+    JSON and UUID columns: `data/lake_metadata_features.parquet`, embedded), read, appended to so that its footer is
+    rewritten, and read again (1,000 checks; enum fields' nullable type is the same natively, and enum columns
     are refused alike: they are the serializer's, which Lake.Parquet leaves out);
   - `cases`: generated cases (every kind and shape, codec, hint, page layout, encryption): values, levels, field IDs,
     row counts and statistics read back exactly;
@@ -54,7 +59,10 @@ publishing the suite with `PublishAot` and `TrimmerSingleWarn=false` analyses th
 reported on its own. Both report none, and the canary step proves they look at uncalled code (it fails with
 `IL3050` and `IL2057`). The native runs then show that the code behaves the same compiled ahead of time.
 
-Coverage of the package by the suite's modes (`api`, `cases 1 3000`, `write`/`read 1 1000`, `hashes`, `corpus`), run on
+Coverage is now 87.9% of the package's lines (11,663 of 13,276), with the checks above and with uncalled code left
+out of the package (`lake(0050)`, `lake(0051)`). The wider checks found two upstream bugs, fixed in `lake(0052)` (files
+with a FLOAT16 column could not be opened) and `lake(0053)` (INT96 as `BigInteger` could be neither written nor read).
+Before those, coverage of the package by the suite's modes (`api`, `cases 1 3000`, `write`/`read 1 1000`, `hashes`, `corpus`), run on
 the JIT build of the same program with `dotnet-coverage` (the assembly instrumented): 56.2% of all lines (11,450 of
 20,378), and 83.3% (11,450 of 13,746) leaving out the big-endian bit-packing kernels (6,632 generated lines that
 nothing in the library calls; only upstream's own encoder test does). Before the wider `api` checks it was 35.8% and
