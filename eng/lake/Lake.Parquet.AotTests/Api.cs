@@ -33,6 +33,7 @@ static class Api {
         }
         await EncryptedAsync();
         await StatisticsAsync();
+        await EnumsRefusedAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -157,6 +158,22 @@ static class Api {
         using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
         DataColumnStatistics? stats = rowGroup.GetStatistics(reader.Schema.GetDataFields()[0]);
         Check(stats is { NullCount: 2 } && Equals(stats.MinValue, -3L) && Equals(stats.MaxValue, 42L), $"statistics: {stats?.NullCount} nulls, {stats?.MinValue} .. {stats?.MaxValue}");
+    }
+
+    enum Colour { Red, Green }
+
+    /// <summary>
+    /// Enum columns are the serializer's, which Lake.Parquet leaves out: the core API refuses them, the same way here
+    /// as on the JIT (and so a field of an enum type, whose nullable type native AOT does not construct, is never used).
+    /// </summary>
+    static async Task EnumsRefusedAsync() {
+        var field = new DataField<Colour>("c");
+        try {
+            await WriteAsync(new ParquetSchema(field), new ParquetOptions(), rg => rg.WriteAsync<Colour>(field, new[] { Colour.Red }));
+            Check(false, "enum column: written, but the core API has no encoder for enums");
+        } catch(InvalidOperationException e) {
+            Check(e.Message.Contains("not supported", StringComparison.Ordinal), $"enum column: refused with '{e.Message}'");
+        }
     }
 
     static async Task<T[]> ReadAsync<T>(ParquetRowGroupReader rowGroup, DataField field, int n) where T : struct {
