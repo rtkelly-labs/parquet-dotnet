@@ -119,7 +119,7 @@ return 0;
 
 // The member's syntax, whitespace and comments normalised away, so formatting changes do not count as edits.
 static string Hash(MemberDeclarationSyntax member) =>
-    Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(member.NormalizeWhitespace().ToString())))[..16];
+    Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(member.NormalizeWhitespace().ToString().ReplaceLineEndings("\n"))))[..16];
 
 static string? Name(MemberDeclarationSyntax member) => member switch
 {
