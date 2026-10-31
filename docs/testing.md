@@ -9,6 +9,7 @@ expensive ones also run on demand with more cases.
 | Conformance, forward | files the library writes read back exactly and agree with parquet-cpp, statistics included | `eng/lake/Lake.Parquet.Conformance` | every push and PR (200 seeds), deep on demand |
 | Conformance, reverse | files parquet-cpp writes, with its own encodings and page layouts, read back exactly | the same project | the same |
 | Change verification | each change, alone on upstream, passes the suite, and its tests fail without its code | `lake-stack verify` | every `staging/*` push, one job per change |
+| Benchmarks | what performance changes claim, through the calls Parquet.SourceGenerator's generated code makes | `eng/lake/Lake.Parquet.Benchmarks` | on demand (shared runners are too noisy to gate on) |
 | The stack tool | the process (rules, rebaseline, staging, branches) does what `docs/maintaining.md` says | `eng/lake/Lake.Stack.Tests` | every push and PR |
 
 ## The conformance harness
@@ -89,6 +90,23 @@ Records with `evidence: benchmark` (performance changes, whose tests guard behav
 changes with no library code (tests only) are held to the first only. CI runs it on every `staging/*` branch, one
 job per change, so `lake-stack rebaseline --push` only promotes a stack in which every change still proves
 itself on the new upstream.
+
+## Benchmarks
+
+```bash
+cd eng/lake/Lake.Parquet.Benchmarks
+dotnet run -c Release -- --filter '*'                         # every benchmark, on the fork
+dotnet run -c Release -- --filter '*Read*' --job short        # quicker, noisier
+ParquetProject=/path/to/upstream/src/Parquet/Parquet.csproj dotnet run -c Release -- --filter '*'   # upstream, to compare
+```
+
+The library to build against is an environment variable, not `-p:`: BenchmarkDotNet rebuilds the project in a
+child process, which sees the environment but not the command line's properties.
+
+Million-row columns read and written the way generated readers and writers do (`ReadRawAsync` into reused
+buffers, `ReadAsync` into `T?[]`, strings as chars or as their UTF-8 bytes), with allocations. A change with
+`evidence: benchmark` quotes these numbers before and after in its record. The `*_Utf8` benchmarks need the fork
+(`lake(0017)`): upstream rejects `ReadOnlyMemory<byte>` for string fields.
 
 ## The suite on the renamed build
 

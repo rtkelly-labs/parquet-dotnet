@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!--
+      Benchmarks of the library through the calls Parquet.SourceGenerator's generated code makes
+      (docs/testing.md, "Benchmarks"). ParquetProject picks the library build: the fork's by default,
+      or another checkout's (upstream, to compare), as docs/testing.md shows. Set it as an
+      environment variable: BenchmarkDotNet rebuilds this project in a child process, which drops -p: properties.
+    -->
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <InvariantGlobalization>true</InvariantGlobalization>
+        <ServerGarbageCollection>false</ServerGarbageCollection>
+        <ParquetProject Condition="'$(ParquetProject)' == ''">$(MSBuildThisFileDirectory)..\..\..\src\Parquet\Parquet.csproj</ParquetProject>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="$(ParquetProject)" />
+    </ItemGroup>
+
+</Project>
