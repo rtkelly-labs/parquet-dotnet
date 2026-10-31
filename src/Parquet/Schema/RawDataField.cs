@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System;
 using Parquet.Meta;
 using Type = System.Type;
@@ -37,6 +38,7 @@ public sealed class RawDataField : DataField {
     /// <summary>The legacy converted type written with the column, if any.</summary>
     public ConvertedType? ConvertedType { get; }
 
+    [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
     private static Type ClrTypeOf(Meta.Type physicalType, LogicalType? logical, ConvertedType? converted) => physicalType switch {
         // text: also written from strings (and dictionary-encoded as strings are)
         Meta.Type.BYTE_ARRAY when logical?.STRING != null || logical?.ENUM != null || logical?.JSON != null

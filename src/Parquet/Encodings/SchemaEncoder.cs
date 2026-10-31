@@ -1,4 +1,5 @@
-﻿using System;
+﻿using System.Diagnostics.CodeAnalysis;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
@@ -189,6 +190,7 @@ static class SchemaEncoder {
     /// <summary>
     /// See https://github.com/apache/parquet-format/blob/master/LogicalTypes.md
     /// </summary>
+    [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
     private static SType? GetSystemType(SchemaElement se, ParquetOptions options) {
 
         // not set for non-leaf nodes (map, list etc.)
@@ -365,7 +367,7 @@ static class SchemaEncoder {
         return true;
     }
 
-    private static DataField GetDecimalDataField(SchemaElement se, SType clrType) =>
+    private static DataField GetDecimalDataField(SchemaElement se, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] SType clrType) =>
         new DecimalDataField(se.Name,
             se.Precision.GetValueOrDefault(ParquetOptions.DefaultPrecision),
             se.Scale.GetValueOrDefault(se.Precision is not null ? 0 : ParquetOptions.DefaultScale),

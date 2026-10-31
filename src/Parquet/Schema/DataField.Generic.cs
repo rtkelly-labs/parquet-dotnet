@@ -1,10 +1,11 @@
-﻿namespace Parquet.Schema;
+﻿using System.Diagnostics.CodeAnalysis;
+namespace Parquet.Schema;
 
 /// <summary>
 /// Element of dataset's schema. Provides a helper way to construct a schema element with .NET generics.
 /// <typeparamref name="T">Type of element in the column</typeparamref>
 /// </summary>
-public class DataField<T> : DataField {
+public class DataField<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] T> : DataField {
     /// <summary>
     /// Initializes a new instance of the <see cref="Field"/> class.
     /// </summary>
