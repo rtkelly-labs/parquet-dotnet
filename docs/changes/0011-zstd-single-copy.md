@@ -3,6 +3,7 @@ title: "Zstd decompression without double copies"
 kind: code
 status: fork-only
 depends_on: []
+evidence: benchmark   # a performance change: its tests guard behaviour and pass either way
 upstream_unit: "10"
 ---
 
