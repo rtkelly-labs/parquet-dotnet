@@ -59,12 +59,8 @@ class ReadingColumn<T> : IDisposable where T : struct {
         if(_definitionLevels == null)
             throw new InvalidOperationException($"Definition levels buffer is not allocated for field '{Field.Path}'");
 
-        int nullCount = 0;
-        foreach(int level in _definitionLevels.Value.Span.Slice(_definitionOffset, count)) {
-            if(level != dl) {
-                nullCount++;
-            }
-        }
+        // levels below the maximum are nulls; counted vectorised
+        int nullCount = count - _definitionLevels.Value.Span.Slice(_definitionOffset, count).Count(dl);
 
         _definitionOffset += count;
         return nullCount;

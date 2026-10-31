@@ -215,8 +215,15 @@ public class ParquetRowGroupReader : IDisposable {
         Span<T> nonNullSpan = nonNullMemory.Memory.Span;
         Span<int> dlSpan = definitionLevels.Memory.Span;
         int maxDl = field.MaxDefinitionLevel;
+        int rows = (int)RowCount;
+        if(dlSpan.Slice(0, rows).Count(maxDl) == rows) {
+            // no nulls (counted vectorised): values in order, without a branch and a dependent index per value
+            for(int i = 0; i < rows; i++)
+                valuesSpan[i] = nonNullSpan[i];
+            return;
+        }
         int nni = 0;
-        for(int i = 0; i < RowCount; i++) {
+        for(int i = 0; i < rows; i++) {
             bool isNull = dlSpan[i] < maxDl;
             valuesSpan[i] = isNull ? null : nonNullSpan[nni++];
         }
