@@ -21,9 +21,9 @@ depends_on: [0022, 0024]
     `ListField`'s `itemDataType`, and what `RawDataField`, `TimeDataField`, `SchemaEncoder` and `ParquetOptions` compute.
     Annotations are metadata only: callers passing concrete types are unaffected; a caller generic over `T` that passes
     `typeof(T)` annotates its `T` too (the analyzer says so);
-  - `GetNullable` takes the nullable form of every value type a data field can have from a table, and constructs one
-    only for other value types (enums) where the runtime can (`RuntimeFeature.IsDynamicCodeSupported`); under native AOT
-    such a type is returned as is.
+  - `GetNullable` takes the nullable form of every value type a data field can have from a table; for other value
+    types (enums) it constructs the `Nullable<T>` type, never an instance of it, which native AOT also supports (the
+    native suite checks it), with a justified suppression; should a runtime refuse, the type itself.
 
 ## Evaluation
 
@@ -40,4 +40,4 @@ serializer annotated or excluded to be AOT-compatible as a whole.
 
 ## Compatibility
 
-None on the JIT: the same types. Under native AOT, `ClrNullableIfHasNullsType` of an enum field is the enum itself.
+None: the same types on the JIT and under native AOT.

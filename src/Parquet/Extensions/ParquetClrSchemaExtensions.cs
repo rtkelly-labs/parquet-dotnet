@@ -197,12 +197,17 @@ static class ParquetClrSchemaExtensions {
             return nullable;
         }
 
-        // another value type (an enum): constructed where the runtime can; under native AOT, the type itself
-        return System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported ? ConstructNullable(t) : t;
+        // another value type (an enum): the type is constructed, never an instance of it, which native AOT supports
+        // too (Lake.Parquet.AotTests checks it natively); should a runtime refuse, the type itself
+        try {
+            return ConstructNullable(t);
+        } catch(NotSupportedException) {
+            return t;
+        }
     }
 
     [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
-        Justification = "Called only when RuntimeFeature.IsDynamicCodeSupported; net8.0's analyzer does not treat that as a guard")]
+        Justification = "Constructs only the Nullable<T> type over a value type, never an instance or code for it; native AOT supports that, as Lake.Parquet.AotTests proves for enums")]
     private static Type ConstructNullable(Type t) => typeof(Nullable<>).MakeGenericType(t);
 
     public static bool IsSimple(this Type t) {
