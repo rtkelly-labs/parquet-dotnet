@@ -75,6 +75,8 @@ public class ParquetActor {
         //go to -4 bytes (PAR1) -4 bytes (footer length number)
         _fileStream.Seek(-8, SeekOrigin.End);
         int footerLength = await _fileStream.ReadInt32Async();
+        if(footerLength < 0 || footerLength > _fileStream.Length - 8)
+            throw new ParquetException($"footer length {footerLength} does not fit in a file of {_fileStream.Length} bytes, file is corrupt");
 
         //set just before footer starts
         _fileStream.Seek(-8 - footerLength, SeekOrigin.End);

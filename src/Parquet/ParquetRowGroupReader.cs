@@ -85,6 +85,9 @@ public class ParquetRowGroupReader : IDisposable {
                 : $"'{field.Path}' does not exist in this file");
         if(columnChunk.MetaData == null)
             throw new ParquetException($"Column chunk metadata is missing for '{field.Path}', meaning the file is most probably corrupt");
+        // the column's buffers are sized by it
+        if(columnChunk.MetaData.NumValues < 0 || columnChunk.MetaData.NumValues > Array.MaxLength)
+            throw new ParquetException($"'{field.Path}' has {columnChunk.MetaData.NumValues} values, meaning the file is most probably corrupt");
         return columnChunk.MetaData;
     }
 

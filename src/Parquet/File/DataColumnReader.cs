@@ -78,6 +78,8 @@ class DataColumnReader {
             return;
 
         long fileOffset = GetFileOffset();
+        if(fileOffset < 0 || fileOffset >= _inputStream.Length)
+            throw new ParquetException($"column '{_dataField.Path}' starts at {fileOffset}, outside the file of {_inputStream.Length} bytes, file is corrupt");
         long pageOffset = fileOffset;
         // encrypted: a page header's AAD depends on whether it is the dictionary page's, which comes first when there is one
         bool dictionaryFirst = _thriftColumnChunk.MetaData.DictionaryPageOffset is > 0;
@@ -89,6 +91,9 @@ class DataColumnReader {
             PageHeader ph = _decryptor == null
                 ? PageHeader.Read(new ThriftCompactProtocolReader(_inputStream))
                 : _decryptor.ReadHeader(_inputStream, _pageIsDictionary, _dataPageOrdinal);
+            // page buffers are sized by these: the page must fit in what is left of the file
+            if(ph.CompressedPageSize < 0 || ph.CompressedPageSize > _inputStream.Length - _inputStream.Position || ph.UncompressedPageSize < 0)
+                throw new ParquetException($"column '{_dataField.Path}': page sizes {ph.CompressedPageSize} (compressed) and {ph.UncompressedPageSize} (uncompressed) do not fit in the file, file is corrupt");
             pageOffset = _inputStream.Position + ph.CompressedPageSize;
 
             switch(ph.Type) {
@@ -148,6 +153,7 @@ class DataColumnReader {
                 _thriftColumnChunk.MetaData?.IndexPageOffset ?? 0
             }
             .Where(e => e != 0)
+            .DefaultIfEmpty(-1)
             .Min();
 
     private async ValueTask ReadDataPageV1Async<T>(PageHeader ph, ReadingColumn<T> rc, CancellationToken cancellationToken) where T : struct {
@@ -214,6 +220,8 @@ class DataColumnReader {
         // in the header), then the values, which alone are compressed
         int repLength = ph.DataPageHeaderV2.RepetitionLevelsByteLength;
         int defLength = ph.DataPageHeaderV2.DefinitionLevelsByteLength;
+        if(repLength < 0 || defLength < 0 || (long)repLength + defLength > Math.Min(pageMemory.Length, ph.UncompressedPageSize))
+            throw new ParquetException($"column '{_dataField.Path}': level lengths {repLength} and {defLength} do not fit in the page, file is corrupt");
         int dataUsed = repLength + defLength;
 
         if(_dataField.MaxRepetitionLevel > 0) {

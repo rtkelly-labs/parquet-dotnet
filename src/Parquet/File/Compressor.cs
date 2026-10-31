@@ -43,6 +43,8 @@ class DefaultCompressor : ICompressor {
     }
 
     private async ValueTask<IMemoryOwner<byte>> NoneDecompress(Stream source, int destinationLength) {
+        if(source.Length - source.Position < destinationLength)
+            throw new EndOfStreamException($"page has {source.Length - source.Position} bytes, but its header declares {destinationLength}. File is most likely truncated or corrupt.");
         var r = MemoryOwner<byte>.Allocate(destinationLength);
         int copied = await source.CopyToAsync(r.Memory);
         if(copied < destinationLength) {
@@ -53,6 +55,14 @@ class DefaultCompressor : ICompressor {
         return r;
 
     }
+
+    /// <summary>
+    /// The size to allocate for a page whose header declares <paramref name="destinationLength"/> bytes, when
+    /// <paramref name="compressedLength"/> bytes can decompress to at most <paramref name="maxRatio"/> times as many:
+    /// the header is not trusted for more than the data can hold.
+    /// </summary>
+    private static int AtMost(int destinationLength, long compressedLength, int maxRatio) =>
+        (int)Math.Min(destinationLength, compressedLength * maxRatio + 1024);
 
     // "Snappy" compression
 
@@ -105,7 +115,8 @@ class DefaultCompressor : ICompressor {
     }
 
     private async ValueTask<IMemoryOwner<byte>> GzipDecompress(Stream source, int destinationLength) {
-        var owner = MemoryOwner<byte>.Allocate(destinationLength);
+        // deflate expands at most 1032:1
+        var owner = MemoryOwner<byte>.Allocate(AtMost(destinationLength, source.Length - source.Position, 1032));
         int copied = 0;
         using MemoryOwner<byte> compressed = await ReadRestAsync(source);
         ArraySegment<byte> segment = compressed.DangerousGetArray();
@@ -113,7 +124,7 @@ class DefaultCompressor : ICompressor {
         using(var gzip = new GZipStream(ms, CompressionMode.Decompress, leaveOpen: true)) {
             copied = await gzip.CopyToAsync(owner.Memory);
         }
-        if(copied < destinationLength) {
+        if(copied < owner.Length) {
             // IMPORTANT: .Slice() transfers ownership, so owner does not need to be disposed
             owner = owner.Slice(0, copied);
         }
@@ -241,6 +252,9 @@ class DefaultCompressor : ICompressor {
         // that size, falling back to letting ZstdSharp size the output when the header has none.
         ulong size = ZstdSharp.Decompressor.GetDecompressedSize(compressed.Span);
         if(size > 0 && size <= int.MaxValue) {
+            // a zstd block of 4 bytes (an RLE block) expands to at most 128 KiB, so no frame expands more than 32768:1
+            if(size > (ulong)compressed.Length * 32768)
+                throw new InvalidDataException($"Zstd frame declares {size} bytes, more than its {compressed.Length} bytes can hold. File is most likely corrupt.");
             MemoryOwner<byte> owner = MemoryOwner<byte>.Allocate((int)size);
             int written = decompressor.Unwrap(compressed.Span, owner.Span);
             return written == owner.Length ? owner : owner.Slice(0, written);
@@ -274,14 +288,15 @@ class DefaultCompressor : ICompressor {
 
     private async ValueTask<IMemoryOwner<byte>> Lz4Decompress(Stream source, int destinationLength) {
         using MemoryOwner<byte> compressed = await ReadRestAsync(source);
-        var owner = MemoryOwner<byte>.Allocate(destinationLength);
+        // an LZ4 block expands at most 255:1
+        var owner = MemoryOwner<byte>.Allocate(AtMost(destinationLength, compressed.Length, 255));
         int decoded = LZ4Codec.Decode(compressed.Span, owner.Span);
         if(decoded < 0) {
             owner.Dispose();
             throw new InvalidDataException("LZ4 page data is corrupt.");
         }
         // IMPORTANT: .Slice() transfers ownership, so owner does not need to be disposed
-        return decoded < destinationLength ? owner.Slice(0, decoded) : owner;
+        return decoded < owner.Length ? owner.Slice(0, decoded) : owner;
     }
 
     public async ValueTask<IMemoryOwner<byte>> CompressAsync(
