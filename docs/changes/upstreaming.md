@@ -37,7 +37,7 @@ What has not been verified, for every change:
 
 ## Once upstream has it
 
-The next sync drops the commit when upstream's code is identical, or reports it when only its record
+The next rebaseline drops the commit when upstream's code is identical, or reports it when only its record
 is left or it conflicts with upstream's own form of the fix. Take upstream's version, keep any test of
 ours that still adds something (as a new change), and drop the commit. If upstream fixed the same bug
 differently and our test still fails, that difference is a bug to report upstream, by hand, and to

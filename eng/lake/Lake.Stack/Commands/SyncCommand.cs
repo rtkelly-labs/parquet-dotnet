@@ -5,10 +5,7 @@ namespace Lake.Stack.Commands;
 public sealed record SyncOptions(
     string? Onto = null,
     bool Fetch = true,
-    bool AbortOnConflict = false,
-    string? ReportPath = null,
-    string? OutputsPath = null,
-    string? PublishTo = null);
+    bool AbortOnConflict = false);
 
 public sealed record SyncResult(
     string Before,
@@ -27,7 +24,8 @@ public sealed record SyncConflict(string? Commit, string? Subject, IReadOnlyList
 /// <summary>
 /// Rebases the checked-out stack onto upstream: upstream's commits stay as they are, the stack's are
 /// replayed on top, <c>fixup!</c> commits are folded into their change, and changes upstream already
-/// has are dropped. Reports what moved, what upstream took, and the range-diff.
+/// has are dropped. Reports what moved, what upstream took, and the range-diff. It only rebases locally;
+/// <see cref="RebaselineCommand"/> is the whole step, with verification and publishing.
 /// </summary>
 public static class SyncCommand {
 
@@ -39,19 +37,7 @@ public static class SyncCommand {
 
     public static int Run(StackContext context, SyncOptions options) {
         SyncResult result = Sync(context, options);
-        if(result.Changed && options.PublishTo != null) {
-            // Where the build runs before the stack branch is moved (PromoteCommand).
-            context.Git.Run("push", "--quiet", "--force", options.PublishTo, $"{result.After}:refs/heads/{PromoteCommand.NextBranch}");
-        }
-        string report = Report(context, result, options.Onto ?? context.Upstream);
-        context.Out.Write(report);
-        if(options.ReportPath != null) {
-            File.WriteAllText(options.ReportPath, report);
-        }
-        if(options.OutputsPath != null) {
-            File.AppendAllText(options.OutputsPath,
-                $"changed={(result.Changed ? "true" : "false")}\nbefore={result.Before}\nafter={result.After}\nupstream={result.NewBase}\nconflict={(result.Conflict != null ? "true" : "false")}\n");
-        }
+        context.Out.Write(Report(context, result, options.Onto ?? context.Upstream));
         return result.Conflict == null ? ExitCodes.Ok : ExitCodes.Problems;
     }
 
@@ -127,7 +113,7 @@ public static class SyncCommand {
                 }
             }
             report.AppendLine();
-            report.AppendLine("Resolve it in that change's own commit, keeping both intents, then `git rebase --continue` (docs/maintaining.md, \"By hand: when the sync stops\").");
+            report.AppendLine("Resolve it in that change's own commit, keeping both intents, then `git rebase --continue` (docs/maintaining.md, \"When the rebase stops\").");
             report.AppendLine();
             report.AppendLine("```");
             report.AppendLine(conflict.Message);

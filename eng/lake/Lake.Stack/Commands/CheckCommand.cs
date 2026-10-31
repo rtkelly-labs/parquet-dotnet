@@ -7,7 +7,7 @@ public static class CheckCommand {
         StackModel model = StackModel.Load(context.Git, head, context.Upstream);
         IReadOnlyList<string> problems = model.Problems();
         foreach(StackCommit fixup in model.Commits.Where(c => c.FixupOf != null)) {
-            context.Out.WriteLine($"pending: {fixup.Short} {fixup.Subject} (folded in at the next sync)");
+            context.Out.WriteLine($"pending: {fixup.Short} {fixup.Subject} (folded in at the next rebaseline)");
         }
         foreach(string problem in problems) {
             context.Error.WriteLine(problem);

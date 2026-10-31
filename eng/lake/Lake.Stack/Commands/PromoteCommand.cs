@@ -11,12 +11,11 @@ public sealed record PromoteOptions(
 /// Moves the stack branch on the remote from one stack head to its rebased successor: refuses a
 /// successor that breaks the stack's rules, tags the old head <c>lake/stack/&lt;date&gt;-&lt;sha&gt;</c>
 /// so it stays reachable, force-pushes with a lease on the old head (so a commit merged meanwhile is
-/// never lost), and deletes <c>lake/next</c>.
+/// never lost). <see cref="RebaselineCommand"/> calls it with <c>--push</c>.
 /// </summary>
 public static class PromoteCommand {
 
     public const string TagPrefix = "lake/stack/";
-    public const string NextBranch = "lake/next";
 
     public static int Run(StackContext context, PromoteOptions options) {
         Git git = context.Git;
@@ -42,11 +41,10 @@ public static class PromoteCommand {
 
         GitResult push = git.TryRun("push", "--quiet", $"--force-with-lease=refs/heads/{options.Branch}:{from}", options.Remote, $"{to}:refs/heads/{options.Branch}");
         if(push.ExitCode != 0) {
-            context.Error.WriteLine($"{options.Remote}/{options.Branch} is no longer at {from[..10]} (something was merged meanwhile): nothing moved; the next sync includes it");
+            context.Error.WriteLine($"{options.Remote}/{options.Branch} is no longer at {from[..10]} (something was merged meanwhile): nothing moved; rebaseline again to include it");
             context.Error.WriteLine(push.Error.Trim());
             return ExitCodes.Problems;
         }
-        git.TryRun("push", "--quiet", options.Remote, "--delete", NextBranch);
         context.Out.WriteLine($"{options.Remote}/{options.Branch}: {from[..10]} (tagged {tag}) -> {to[..10]}");
         return ExitCodes.Ok;
     }

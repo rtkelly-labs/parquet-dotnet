@@ -5,7 +5,7 @@
 **Lake.Parquet is a fork of [Parquet.Net](https://github.com/aloneguid/parquet-dotnet)**, the fully
 managed Apache Parquet library by Ivan Gavryliuk ([@aloneguid](https://github.com/aloneguid)) and its
 contributors. Almost all of the code here is theirs. This fork is upstream's history, unchanged, with a
-short stack of recorded changes on top, rebased onto every new upstream commit. It publishes the result
+short stack of recorded changes on top, rebaselined onto a newer upstream when the maintainer decides to. It publishes the result
 to NuGet as [`Lake.Parquet`](https://www.nuget.org/packages/Lake.Parquet), in the `Lake.Parquet`
 namespace.
 
@@ -83,22 +83,23 @@ rtkelly-labs/parquet-dotnet master                    \- 0001 - 0002 - ... - 002
 - **The fork's own work is one commit per change, on top.** `lake(0001)` is the packaging, CI and docs;
   each later `lake(NNNN)` commit is one change, with its record in `docs/changes/` in the same commit.
   `git log upstream/master..master` is therefore the complete list of what Lake.Parquet adds.
-- **The stack is rebased continually.** [`.github/workflows/lake-sync.yml`](.github/workflows/lake-sync.yml)
-  rebases it onto upstream's `master` every day, runs the whole build and test suite on the result,
-  and only then moves `master`. A change upstream has taken drops out of the stack by itself, and the
-  job reports it.
-- **Nothing is lost when `master` moves.** Before each rebase the previous head is tagged
-  `lake/stack/<date>-<upstream>`, and every release is tagged `lake-v<version>`. Pin a tag, never a
-  bare commit of `master`.
+- **The stack is rebaselined deliberately.** Moving onto a newer upstream is a choice the maintainer
+  makes, because upstream's changes can break the changes on top: `lake-stack rebaseline` rebases the
+  stack, folds in fixups, checks it and runs the whole test suite locally, and publishes only when
+  asked (`--push`). A change upstream has taken drops out of the stack by itself, and the report says so.
+  Nothing rebases on a schedule.
+- **Nothing is lost when `master` moves.** Before a rebaseline is published the previous head is tagged
+  `lake/stack/<date>-<sha>`, and every release is tagged `lake-v<version>`, so a pinned commit stays
+  reachable.
 
 Every change also exists as a branch `lake/change/NNNN-name`: upstream plus that change (and only
-the changes it depends on), rebuilt at every sync. Its diff against upstream is exactly what an
+the changes it depends on), rebuilt at every rebaseline. Its diff against upstream is exactly what an
 upstream pull request would contain.
 
 [`docs/maintaining.md`](docs/maintaining.md) is the guide to this structure: every ref and what
-moves it, the daily sync, re-basing other branches onto a new stack with one command
+moves it, how to rebaseline onto upstream, re-basing other branches onto a new stack with one command
 (the `rewire` command of [`eng/lake/Lake.Stack`](eng/lake/Lake.Stack), the C# tool that runs
-the whole process), and resolving a sync that stops.
+the whole process), and resolving a rebase that stops.
 [`docs/changes/README.md`](docs/changes/README.md) has the rules for changes and their records.
 
 ## How Lake.Parquet is built
@@ -124,8 +125,8 @@ Upstream's `build.yml` stays as upstream wrote it. `lake-ci` is the fork's own r
 
 - A new change is a pull request whose squash commit is titled `lake(NNNN): title` and that adds its
   record `docs/changes/NNNN-name.md` ([format](docs/changes/README.md)).
-- A fix to an existing change is a pull request titled `fixup! lake(NNNN): title`; the next sync folds
-  it into that change's commit.
+- A fix to an existing change is a pull request titled `fixup! lake(NNNN): title`; the next rebaseline
+  folds it into that change's commit.
 - Prefer upstream. If a change is useful to everyone, it belongs in Parquet.Net; the record links the
   upstream issue or PR.
 - **Upstream does not accept AI-generated issues or pull requests**, and blocks accounts that send

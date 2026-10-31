@@ -119,36 +119,4 @@ public class SyncTests {
         Assert.Equal(2, code);
         Assert.Contains("working tree has changes", error);
     }
-
-    [Fact]
-    public void Writes_outputs_for_the_workflow() {
-        using var repo = new TestRepo();
-        repo.AddChange("0002", "fix-a", "Fix A", files: ("src/A.cs", TestRepo.Lines("a", 20, (3, "fixed"))));
-        repo.UpstreamCommit("upstream: edit B", ("src/B.cs", TestRepo.Lines("b", 20, (10, "upstream"))));
-        string outputs = Path.GetTempFileName();
-        string report = Path.GetTempFileName();
-
-        (int code, _, _) = repo.Tool("sync", "--no-fetch", "--outputs", outputs, "--report", report);
-
-        Assert.Equal(0, code);
-        string written = File.ReadAllText(outputs);
-        Assert.Contains("changed=true", written);
-        Assert.Contains($"after={repo.Fork.Resolve("HEAD")}", written);
-        Assert.Contains("conflict=false", written);
-        Assert.Contains("## Rebased onto", File.ReadAllText(report));
-    }
-}
-
-public class SyncPublishTests {
-
-    [Fact]
-    public void Publishes_a_changed_stack_to_lake_next() {
-        using var repo = new TestRepo();
-        repo.UpstreamCommit("upstream: new", ("src/D.cs", "d\n"));
-
-        (int code, _, _) = repo.Tool("sync", "--no-fetch", "--publish", "origin");
-
-        Assert.Equal(0, code);
-        Assert.Equal(repo.Fork.Resolve("HEAD"), repo.Origin.Resolve("refs/heads/lake/next"));
-    }
 }

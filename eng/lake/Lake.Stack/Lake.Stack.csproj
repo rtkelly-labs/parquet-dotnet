@@ -2,7 +2,7 @@
 
     <!--
       The tool that keeps Lake.Parquet's change stack: upstream's history with one commit per change on
-      top, rebased onto upstream continually. docs/maintaining.md is the guide and lists the commands
+      top, rebaselined onto upstream when the maintainer decides to. docs/maintaining.md is the guide and lists the commands
       (run it with dotnet run and the project eng/lake/Lake.Stack).
 
       It is the fork's own (lake(0001)) and stays out of upstream's solution, so upstream's build never

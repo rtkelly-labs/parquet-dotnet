@@ -36,13 +36,24 @@ namespace Lake.Stack {
 
             var syncOnto = new Option<string?>("--onto") { Description = "Rebase onto this ref instead of upstream (a release tag, say)" };
             var noFetch = new Option<bool>("--no-fetch") { Description = "Do not fetch the upstream remote first" };
-            var abortOnConflict = new Option<bool>("--abort-on-conflict") { Description = "Abort instead of leaving the rebase to resolve (CI)" };
-            var report = new Option<string?>("--report") { Description = "Also write the Markdown report to this file" };
-            var outputs = new Option<string?>("--outputs") { Description = "Append changed/before/after/upstream/conflict as key=value lines (GitHub's $GITHUB_OUTPUT)" };
-            var publish = new Option<string?>("--publish") { Description = "Force-push a changed stack to lake/next on this remote, for its build" };
-            var sync = new Command("sync", "Rebase the checked-out stack onto upstream, folding in fixups") { syncOnto, noFetch, abortOnConflict, report, outputs, publish };
+            var abortOnConflict = new Option<bool>("--abort-on-conflict") { Description = "Abort instead of leaving the rebase to resolve" };
+            var sync = new Command("sync", "Only rebase the checked-out stack onto upstream, folding in fixups (rebaseline is the whole step)") { syncOnto, noFetch, abortOnConflict };
             sync.SetAction(parse => Guard(error, () => SyncCommand.Run(Context(parse), new SyncOptions(
-                parse.GetValue(syncOnto), !parse.GetValue(noFetch), parse.GetValue(abortOnConflict), parse.GetValue(report), parse.GetValue(outputs), parse.GetValue(publish)))));
+                parse.GetValue(syncOnto), !parse.GetValue(noFetch), parse.GetValue(abortOnConflict)))));
+
+            var rebaselineOnto = new Option<string?>("--onto") { Description = "Rebase onto this ref instead of upstream's branch (an upstream release tag, say)" };
+            var resume = new Option<bool>("--continue") { Description = "Resume a rebaseline: after resolving a conflict or fixing a change, or to publish one" };
+            var abort = new Option<bool>("--abort") { Description = "Give up a rebaseline and put the stack branch back where it was" };
+            var publishIt = new Option<bool>("--push") { Description = "Publish once verified: tag the old head, move the remote's stack branch, regenerate the change branches" };
+            var noTest = new Option<bool>("--no-test") { Description = $"Do not run {RebaselineCommand.DefaultTestProject}" };
+            var rebaselineRemote = new Option<string>("--remote") { Description = "Default: origin", DefaultValueFactory = _ => "origin" };
+            var rebaselineBranch = new Option<string>("--branch") { Description = "The stack branch (default: master)", DefaultValueFactory = _ => "master" };
+            var rebaseline = new Command("rebaseline", "Move the stack onto a newer upstream, deliberately: rebase, verify, and publish only with --push") {
+                rebaselineOnto, resume, abort, publishIt, noTest, rebaselineRemote, rebaselineBranch,
+            };
+            rebaseline.SetAction(parse => Guard(error, () => RebaselineCommand.Run(Context(parse), new RebaselineOptions(
+                parse.GetValue(rebaselineOnto), parse.GetValue(resume), parse.GetValue(abort), parse.GetValue(publishIt), !parse.GetValue(noTest),
+                parse.GetValue(rebaselineRemote)!, parse.GetValue(rebaselineBranch)!))));
 
             var branchesOnto = new Option<string?>("--onto") { Description = "Build the branches from this ref instead of upstream" };
             var push = new Option<string?>("--push") { Description = "Force-push them to this remote, and delete its branches of retired changes" };
@@ -70,7 +81,7 @@ namespace Lake.Stack {
             checkPr.SetAction(parse => Guard(error, () => CheckPrCommand.Run(Context(parse), parse.GetValue(title)!, parse.GetValue(prBase)!, parse.GetValue(head)!)));
 
             var root = new RootCommand("Keeps Lake.Parquet's change stack on top of upstream (docs/maintaining.md)") {
-                repo, upstream, check, checkPr, status, sync, branches, rewire, promote,
+                repo, upstream, check, checkPr, status, rebaseline, sync, branches, rewire, promote,
             };
             return root.Parse(args).Invoke(new InvocationConfiguration { Output = output, Error = error });
         }

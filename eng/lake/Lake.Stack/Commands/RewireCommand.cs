@@ -15,7 +15,7 @@ public sealed record RewireEntry(string Branch, RewireOutcome Outcome, string? F
 /// <summary>
 /// Puts other branches back on top of the stack after it has been rebased. A branch's own commits are
 /// those after the newest point where it meets the stack, a previous stack head (the lake/stack/* tags
-/// the sync leaves), a release (lake-v*), or upstream; only those are moved, with
+/// a rebaseline leaves), a release (lake-v*), or upstream; only those are moved, with
 /// <c>git rebase --onto &lt;stack&gt; &lt;fork point&gt; &lt;branch&gt;</c>.
 /// </summary>
 public static class RewireCommand {
@@ -37,10 +37,10 @@ public static class RewireCommand {
         return entries.Any(e => e.Outcome == RewireOutcome.Conflict) ? ExitCodes.Problems : ExitCodes.Ok;
     }
 
-    /// <summary>Every local branch except the stack itself and what the sync generates.</summary>
+    /// <summary>Every local branch except the stack itself and the generated change branches.</summary>
     public static List<string> AllBranches(Git git, string onto) =>
         git.Lines("for-each-ref", "--format=%(refname:short)", "refs/heads/")
-            .Where(b => b != onto && b != PromoteCommand.NextBranch && !b.StartsWith(BranchesCommand.Prefix, StringComparison.Ordinal))
+            .Where(b => b != onto && !b.StartsWith(BranchesCommand.Prefix, StringComparison.Ordinal))
             .ToList();
 
     public static IReadOnlyList<RewireEntry> Rewire(StackContext context, string onto, bool apply, IReadOnlyList<string> branches) {

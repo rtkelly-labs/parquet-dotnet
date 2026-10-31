@@ -13,22 +13,21 @@ Everything that makes this repository a fork that publishes `Lake.Parquet`, with
 upstream file. It is the bottom commit of the stack, so every change is rebased on top of it.
 
 - `README.md`, `docs/vision.md`, `AGENTS.md` and `AI_POLICY.md` at the top level, crediting upstream.
-- `docs/maintaining.md`: the guide to the structure, the sync and re-basing every branch onto upstream.
+- `docs/maintaining.md`: the guide to the structure, rebaselining onto upstream and re-basing every
+  other branch onto the new stack.
 - `docs/changes/`: the rules of the stack, this record, and how to propose a change upstream.
 - `eng/lake/Lake.Stack` (C#) and its tests: checks the stack and pull requests into it, reports its
-  changes, rebases it onto upstream, promotes a rebased stack, rebuilds the `lake/change/*` branches,
-  and moves other branches onto a new stack. The workflows only call it.
+  changes, rebaselines it onto upstream when the maintainer runs it (rebase, check, test, then publish
+  on request), rebuilds the `lake/change/*` branches, and moves other branches onto a new stack.
 - `eng/lake/RenameNamespace.cs`, `eng/lake/Lake.Parquet.targets`, `eng/lake/VerifyLakeAssembly.cs`
   and `eng/lake/PACKAGE_README.md`: the build-time rename from `Parquet` to `Lake.Parquet` and the
   package's identity.
 - `.github/workflows/lake.yml`: checks the stack, renames a copy, builds, verifies the rename, runs
   the test suite against it, packs, and publishes on manual dispatch. `lake-ci` is the required check.
-- `.github/workflows/lake-sync.yml`: rebases the stack onto upstream every day, and moves `master`
-  only after `lake.yml` passes on the result.
 
 The fork needs to ship improvements under its own name without renaming upstream's code, which would
-make every rebase conflict, and to stay on top of the latest upstream without rewriting upstream's
-history. See [`../vision.md`](../vision.md).
+make every rebase conflict, and to move onto newer upstreams, when the maintainer chooses, without
+rewriting upstream's history. See [`../vision.md`](../vision.md).
 
 ## Evaluation
 
@@ -47,8 +46,9 @@ sync: a branch cut from the previous stack moved only its own two commits onto t
 cut from upstream before the stack existed (`feature/variant-encoding`) moved its four, and a branch
 already on the new stack was left alone. Every `lake/change/*` branch, built alone on upstream with
 its `depends_on`, passes the whole suite. Each of those scenarios, and the record format, `check`,
-`check-pr`, `branches` and `promote` (including a refused lease), is now a test in
-`eng/lake/Lake.Stack.Tests`, on throwaway repositories: 47 tests.
+`check-pr`, `branches`, `promote` (including a refused lease) and `rebaseline` (verify then publish, a
+conflict resolved part-way, failing tests, a stale start, abort), is a test in
+`eng/lake/Lake.Stack.Tests`, on throwaway repositories: 51 tests.
 
 ## Upstream
 

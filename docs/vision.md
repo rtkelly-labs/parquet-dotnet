@@ -32,8 +32,9 @@ fork is where a fix can be made, measured and shipped, while it is offered upstr
   wrote it. On top of it, every line that differs from upstream belongs to one commit, which is one
   change in [`changes/`](changes/), with what it does, why, how it was evaluated against upstream, and
   its upstream status.
-- **Always on top of the latest upstream.** The stack is rebased onto upstream's `master` every day, so
-  Lake.Parquet never falls behind, and a change upstream has taken leaves the stack by itself.
+- **Moved onto newer upstreams deliberately.** The maintainer rebaselines the stack onto upstream
+  when there is a reason to (a release, a fix), and looks at what broke before publishing it; a change
+  upstream has taken leaves the stack by itself at that point.
 - **Compatible with upstream by default.** Same API, same behaviour, same file format. A change that
   alters behaviour says so in its record, so a difference is a decision, never a surprise.
 - **Built to be retired.** A change is written as if it were going upstream: minimal, in upstream's

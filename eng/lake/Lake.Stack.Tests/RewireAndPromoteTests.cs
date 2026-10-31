@@ -5,7 +5,7 @@ namespace Lake.Stack.Tests;
 public class RewireAndPromoteTests {
 
     /// <summary>
-    /// The situation after a daily sync: the stack has been rebased onto a new upstream commit (with a
+    /// The situation after a rebaseline: the stack has been rebased onto a new upstream commit (with a
     /// fixup folded in), the old head is tagged, and branches built on the old stack or on upstream are
     /// left behind.
     /// </summary>
@@ -83,7 +83,6 @@ public class RewireAndPromoteTests {
         repo.UpstreamCommit("upstream: new", ("src/D.cs", "d\n"));
         SyncCommand.Sync(repo.Context(), new SyncOptions(Fetch: false));
         string newStack = repo.Fork.Resolve("HEAD");
-        repo.Fork.Run("push", "--quiet", "--force", "origin", "HEAD:refs/heads/lake/next");
 
         (int code, string output, _) = repo.Tool("promote", "--from", oldStack, "--to", newStack);
 
@@ -92,7 +91,6 @@ public class RewireAndPromoteTests {
         Assert.Equal(newStack, repo.Origin.Resolve("refs/heads/master"));
         string tag = Assert.Single(repo.Origin.Lines("tag", "--list", "lake/stack/*"));
         Assert.Equal(oldStack, repo.Origin.Resolve(tag));
-        Assert.Null(repo.Origin.TryResolve("refs/heads/lake/next"));
     }
 
     [Fact]
@@ -101,7 +99,7 @@ public class RewireAndPromoteTests {
         string oldStack = repo.Fork.Resolve("HEAD");
         repo.AddChange("0002", "fix-a", "Fix A", files: ("src/A.cs", TestRepo.Lines("a", 20, (3, "fixed"))));
         string merged = repo.Fork.Resolve("HEAD");
-        repo.Fork.Run("push", "--quiet", "origin", "master");   // a pull request merged while the sync ran
+        repo.Fork.Run("push", "--quiet", "origin", "master");   // a pull request merged while the rebaseline ran
         repo.Fork.Run("reset", "--quiet", "--hard", oldStack);
         repo.UpstreamCommit("upstream: new", ("src/D.cs", "d\n"));
         SyncCommand.Sync(repo.Context(), new SyncOptions(Fetch: false));

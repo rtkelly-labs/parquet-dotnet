@@ -6,8 +6,8 @@ name: Lake.Parquet
 #
 # This file is the fork's own; upstream's build.yml is left as upstream wrote it and still runs.
 # `lake-ci` is the required check. Unlike upstream's workflow it has no paths-ignore, so a PR that
-# only edits a change record still reports it. lake-sync.yml calls it on the rebased stack before
-# moving master (docs/maintaining.md, "Automatic: the daily sync").
+# only edits a change record still reports it. It also runs on master after a rebaseline is pushed
+# (docs/maintaining.md, "Rebaselining onto upstream"); rebaselines themselves are never run here.
 #
 # Actions are pinned to commit SHAs by hand: rig's pinning policy is not applied to forks, because
 # it would also rewrite upstream's workflow and conflict on every rebase.
@@ -17,12 +17,6 @@ on:
     branches: [master]
   push:
     branches: [master]
-  workflow_call:
-    inputs:
-      ref:
-        description: "The commit to build (lake-sync.yml passes the rebased stack)"
-        required: true
-        type: string
   workflow_dispatch:
     inputs:
       publish:
@@ -54,7 +48,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.ref || '' }}
           fetch-depth: 0
 
       - name: Setup .NET
@@ -90,8 +83,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ inputs.ref || '' }}
 
       - name: Setup .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
