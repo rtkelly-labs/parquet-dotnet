@@ -62,13 +62,16 @@ static partial class DeltaBinaryPackedEncoder {
     private static void EncodeShort(ReadOnlySpan<short> data, Stream destination,
         int blockSize, int miniblockSize) {
 
-        if(data.Length == 0)
-            return;
-
         // header: <block size in values> <number of miniblocks in a block> <total value count> <first value>
         int miniblockCount = blockSize / miniblockSize;
         destination.WriteULEB128((ulong)blockSize);
         destination.WriteULEB128((ulong)miniblockCount);
+        if(data.Length == 0) {
+            // no values still needs the header: a total of 0 and a first value of 0 (readers require them)
+            destination.WriteULEB128(0);
+            destination.WriteULEB128(0);
+            return;
+        }
         destination.WriteULEB128((ulong)data.Length);
         destination.WriteULEB128((ulong)((long)data[0]).ZigZagEncode());
 
@@ -228,13 +231,16 @@ static partial class DeltaBinaryPackedEncoder {
     private static void EncodeUshort(ReadOnlySpan<ushort> data, Stream destination,
         int blockSize, int miniblockSize) {
 
-        if(data.Length == 0)
-            return;
-
         // header: <block size in values> <number of miniblocks in a block> <total value count> <first value>
         int miniblockCount = blockSize / miniblockSize;
         destination.WriteULEB128((ulong)blockSize);
         destination.WriteULEB128((ulong)miniblockCount);
+        if(data.Length == 0) {
+            // no values still needs the header: a total of 0 and a first value of 0 (readers require them)
+            destination.WriteULEB128(0);
+            destination.WriteULEB128(0);
+            return;
+        }
         destination.WriteULEB128((ulong)data.Length);
         destination.WriteULEB128((ulong)((long)data[0]).ZigZagEncode());
 
@@ -388,13 +394,16 @@ static partial class DeltaBinaryPackedEncoder {
     private static void EncodeInt(ReadOnlySpan<int> data, Stream destination,
         int blockSize, int miniblockSize) {
 
-        if(data.Length == 0)
-            return;
-
         // header: <block size in values> <number of miniblocks in a block> <total value count> <first value>
         int miniblockCount = blockSize / miniblockSize;
         destination.WriteULEB128((ulong)blockSize);
         destination.WriteULEB128((ulong)miniblockCount);
+        if(data.Length == 0) {
+            // no values still needs the header: a total of 0 and a first value of 0 (readers require them)
+            destination.WriteULEB128(0);
+            destination.WriteULEB128(0);
+            return;
+        }
         destination.WriteULEB128((ulong)data.Length);
         destination.WriteULEB128((ulong)((long)data[0]).ZigZagEncode());
 
@@ -554,13 +563,16 @@ static partial class DeltaBinaryPackedEncoder {
     private static void EncodeUint(ReadOnlySpan<uint> data, Stream destination,
         int blockSize, int miniblockSize) {
 
-        if(data.Length == 0)
-            return;
-
         // header: <block size in values> <number of miniblocks in a block> <total value count> <first value>
         int miniblockCount = blockSize / miniblockSize;
         destination.WriteULEB128((ulong)blockSize);
         destination.WriteULEB128((ulong)miniblockCount);
+        if(data.Length == 0) {
+            // no values still needs the header: a total of 0 and a first value of 0 (readers require them)
+            destination.WriteULEB128(0);
+            destination.WriteULEB128(0);
+            return;
+        }
         destination.WriteULEB128((ulong)data.Length);
         destination.WriteULEB128((ulong)((long)data[0]).ZigZagEncode());
 
@@ -714,13 +726,16 @@ static partial class DeltaBinaryPackedEncoder {
     private static void EncodeLong(ReadOnlySpan<long> data, Stream destination,
         int blockSize, int miniblockSize) {
 
-        if(data.Length == 0)
-            return;
-
         // header: <block size in values> <number of miniblocks in a block> <total value count> <first value>
         int miniblockCount = blockSize / miniblockSize;
         destination.WriteULEB128((ulong)blockSize);
         destination.WriteULEB128((ulong)miniblockCount);
+        if(data.Length == 0) {
+            // no values still needs the header: a total of 0 and a first value of 0 (readers require them)
+            destination.WriteULEB128(0);
+            destination.WriteULEB128(0);
+            return;
+        }
         destination.WriteULEB128((ulong)data.Length);
         destination.WriteULEB128((ulong)((long)data[0]).ZigZagEncode());
 
@@ -880,13 +895,16 @@ static partial class DeltaBinaryPackedEncoder {
     private static void EncodeUlong(ReadOnlySpan<ulong> data, Stream destination,
         int blockSize, int miniblockSize) {
 
-        if(data.Length == 0)
-            return;
-
         // header: <block size in values> <number of miniblocks in a block> <total value count> <first value>
         int miniblockCount = blockSize / miniblockSize;
         destination.WriteULEB128((ulong)blockSize);
         destination.WriteULEB128((ulong)miniblockCount);
+        if(data.Length == 0) {
+            // no values still needs the header: a total of 0 and a first value of 0 (readers require them)
+            destination.WriteULEB128(0);
+            destination.WriteULEB128(0);
+            return;
+        }
         destination.WriteULEB128((ulong)data.Length);
         destination.WriteULEB128((ulong)((long)data[0]).ZigZagEncode());
 

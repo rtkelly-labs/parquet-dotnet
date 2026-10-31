@@ -66,6 +66,15 @@ public class ParquetOptions {
     public int DictionaryEncodingSampleSize { get; set; } = 0;
 
     /// <summary>
+    /// When set, the writer splits each column chunk into data pages of about this many values (levels, nulls
+    /// included): a page ends at the first row boundary at or after the limit, so a row is never split across
+    /// pages. Smaller pages bound the memory a reader and writer need per page. The chunk's statistics still cover
+    /// every value; pages of a chunk that has several carry none of their own. Unset (the default), each chunk is
+    /// one data page, as before.
+    /// </summary>
+    public int? MaxDataPageValues { get; set; }
+
+    /// <summary>
     /// This option is passed to the <see cref="Microsoft.IO.RecyclableMemoryStreamManager"/>, which keeps a pool of
     /// streams in memory for reuse. By default when this option is unset, the RecyclableStreamManager will keep an
     /// unbounded amount of memory, which is "indistinguishable from a memory leak" per their documentation. This does

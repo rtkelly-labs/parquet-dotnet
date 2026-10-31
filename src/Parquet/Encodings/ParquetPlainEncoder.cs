@@ -38,105 +38,131 @@ static class ParquetPlainEncoder {
         DataColumnStatistics? stats = null) where T : struct {
 
         System.Type t = typeof(T);
+        // Stream.Null asks for the statistics alone (byte stream split pages, and chunks split into several pages,
+        // compute them this way): the values are not encoded at all
+        bool encode = !ReferenceEquals(destination, Stream.Null);
 
         if(t == typeof(bool)) {
             ReadOnlySpan<bool> span = sourceSpan.AsSpan<T, bool>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(byte)) {
             ReadOnlySpan<byte> span = sourceSpan.AsSpan<T, byte>();
-            Encode(span, destination, tse);
+            if(encode)
+                Encode(span, destination, tse);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(sbyte)) {
             ReadOnlySpan<sbyte> span = sourceSpan.AsSpan<T, sbyte>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(short)) {
             ReadOnlySpan<short> span = sourceSpan.AsSpan<T, short>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(ushort)) {
             ReadOnlySpan<ushort> span = sourceSpan.AsSpan<T, ushort>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(int)) {
             ReadOnlySpan<int> span = sourceSpan.AsSpan<T, int>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             if(Data.ColumnStatisticsRules.SortOrder(tse) == Data.ColumnSortOrder.Unsigned)
                 StatsCompute.ComputeUnsigned(span, stats);  // unsigned values passed as their bits
             else
                 StatsCompute.Compute(span, stats);
         } else if(t == typeof(uint)) {
             ReadOnlySpan<uint> span = sourceSpan.AsSpan<T, uint>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(long)) {
             ReadOnlySpan<long> span = sourceSpan.AsSpan<T, long>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             if(Data.ColumnStatisticsRules.SortOrder(tse) == Data.ColumnSortOrder.Unsigned)
                 StatsCompute.ComputeUnsigned(span, stats);
             else
                 StatsCompute.Compute(span, stats);
         } else if(t == typeof(ulong)) {
             ReadOnlySpan<ulong> span = sourceSpan.AsSpan<T, ulong>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(BigInteger)) {
             ReadOnlySpan<BigInteger> span = sourceSpan.AsSpan<T, BigInteger>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(decimal)) {
             ReadOnlySpan<decimal> span = sourceSpan.AsSpan<T, decimal>();
-            Encode(span, destination, tse);
+            if(encode)
+                Encode(span, destination, tse);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(BigDecimal)) {
             ReadOnlySpan<BigDecimal> span = sourceSpan.AsSpan<T, BigDecimal>();
-            Encode(span, destination, tse);
+            if(encode)
+                Encode(span, destination, tse);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(double)) {
             ReadOnlySpan<double> span = sourceSpan.AsSpan<T, double>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(float)) {
             ReadOnlySpan<float> span = sourceSpan.AsSpan<T, float>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(DateTime)) {
             ReadOnlySpan<DateTime> span = sourceSpan.AsSpan<T, DateTime>();
-            Encode(span, destination, tse);
+            if(encode)
+                Encode(span, destination, tse);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(DateOnly)) {
             ReadOnlySpan<DateOnly> span = sourceSpan.AsSpan<T, DateOnly>();
-            Encode(span, destination, tse);
+            if(encode)
+                Encode(span, destination, tse);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(TimeOnly)) {
             ReadOnlySpan<TimeOnly> span = sourceSpan.AsSpan<T, TimeOnly>();
-            Encode(span, destination, tse);
+            if(encode)
+                Encode(span, destination, tse);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(TimeSpan)) {
             ReadOnlySpan<TimeSpan> span = sourceSpan.AsSpan<T, TimeSpan>();
-            Encode(span, destination, tse);
+            if(encode)
+                Encode(span, destination, tse);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(Interval)) {
             ReadOnlySpan<Interval> span = sourceSpan.AsSpan<T, Interval>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(ReadOnlyMemory<char>)) {
             ReadOnlySpan<ReadOnlyMemory<char>> span = sourceSpan.AsSpan<T, ReadOnlyMemory<char>>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else if(t == typeof(ReadOnlyMemory<byte>)) {
             ReadOnlySpan<ReadOnlyMemory<byte>> span = sourceSpan.AsSpan<T, ReadOnlyMemory<byte>>();
-            if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY)
-                EncodeFixed(span, destination, tse);
-            else
-                Encode(span, destination);
+            if(encode) {
+                if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY)
+                    EncodeFixed(span, destination, tse);
+                else
+                    Encode(span, destination);
+            }
             // byte-wise min/max is the order of byte arrays, but not of those holding decimals or INTERVAL
             if(Data.ColumnStatisticsRules.SortOrder(tse) == Data.ColumnSortOrder.Unsigned)
                 StatsCompute.Compute(span, stats);
         } else if(t == typeof(Guid)) {
             ReadOnlySpan<Guid> span = sourceSpan.AsSpan<T, Guid>();
-            Encode(span, destination);
+            if(encode)
+                Encode(span, destination);
             StatsCompute.Compute(span, stats);
         } else {
             throw new NotSupportedException($"no PLAIN encoder exists for {typeof(T)}");

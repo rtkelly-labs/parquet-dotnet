@@ -143,11 +143,11 @@ class DataColumnWriter {
     /// is one contiguous buffer from the start: the compressor then reads it in place, where a stream of blocks was
     /// copied into one buffer first (GetBuffer). Byte arrays and strings keep the block stream.
     /// </summary>
-    private MemoryStream GetPageStream<T>(WritingColumn<T> wc) where T : struct {
-        if(typeof(T) == typeof(ReadOnlyMemory<char>) || typeof(T) == typeof(ReadOnlyMemory<byte>) || wc.Values.IsEmpty)
+    private MemoryStream GetPageStream<T>(WritingColumn<T> wc, int valueCount) where T : struct {
+        if(typeof(T) == typeof(ReadOnlyMemory<char>) || typeof(T) == typeof(ReadOnlyMemory<byte>) || valueCount == 0)
             return _rmsMgr.GetStream();
         // values at most their CLR size (decimals and dates encode smaller), and levels in RLE well under a byte each
-        long estimate = (long)wc.Values.Length * System.Runtime.CompilerServices.Unsafe.SizeOf<T>() + wc.NumValues / 4 + 1024;
+        long estimate = (long)valueCount * System.Runtime.CompilerServices.Unsafe.SizeOf<T>() + valueCount / 4 + 1024;
         return _rmsMgr.GetStream(null, estimate, asContiguousBuffer: true);
     }
 
@@ -177,49 +177,87 @@ class DataColumnWriter {
             await CompressAndWriteAsync(ph, ms, r, cancellationToken);
         }
 
-        // data page
-        using(MemoryStream ms = GetPageStream(wc)) {
-            bool deltaEncode = _options.GetEncodingHint(wc.Field) == EncodingHint.DeltaBinaryPacked && DeltaBinaryPackedEncoder.CanEncode(wc.Values);
-            bool byteSplitStreamEncode = _options.GetEncodingHint(wc.Field) == EncodingHint.ByteSplitStream && ByteStreamSplitEncoder.IsSupported(typeof(T));
+        // data pages: one per chunk unless MaxDataPageValues splits it, at row boundaries
+        bool deltaEncode = _options.GetEncodingHint(wc.Field) == EncodingHint.DeltaBinaryPacked && DeltaBinaryPackedEncoder.CanEncode(wc.Values);
+        bool byteSplitStreamEncode = _options.GetEncodingHint(wc.Field) == EncodingHint.ByteSplitStream && ByteStreamSplitEncoder.IsSupported(typeof(T));
+        List<(int Start, int End)> pages = SplitPages(wc, _options.MaxDataPageValues);
+        bool paged = pages.Count > 1;
+        if(paged && !wc.HasDictionary) {
+            // the chunk's statistics, once over every value; each page is then encoded without them
+            ParquetPlainEncoder.Encode(wc.Values, Stream.Null, tse, wc.Statistics);
+        }
 
-            chunk.MetaData!.DataPageOffset = _stream.Position;
+        chunk.MetaData!.DataPageOffset = _stream.Position;
+        int valueStart = 0;
+        foreach((int start, int end) in pages) {
+            int entries = end - start;
+            int valueCount = wc.HasDefinitionLevels
+                ? wc.DefinitionLevels.Slice(start, entries).Count(wc.Field.MaxDefinitionLevel)
+                : entries;
+            using MemoryStream ms = GetPageStream(wc, valueCount);
 
             // data page Num_values also does include NULLs
-            PageHeader ph = _footer.CreateDataPage(wc.NumValues, wc.HasDictionary, deltaEncode, byteSplitStreamEncode, out DataPageHeader dph);
+            PageHeader ph = _footer.CreateDataPage(entries, wc.HasDictionary, deltaEncode, byteSplitStreamEncode, out DataPageHeader dph);
             r.Pages.Add(ph);
 
             if(wc.HasRepetitionLevels) {
-                WriteLevels(ms, wc.RepetitionLevels!, wc.Field.MaxRepetitionLevel);
+                WriteLevels(ms, wc.RepetitionLevels.Slice(start, entries), wc.Field.MaxRepetitionLevel);
             }
             if(wc.HasDefinitionLevels) {
-                WriteLevels(ms, wc.DefinitionLevels!, wc.Field.MaxDefinitionLevel);
+                WriteLevels(ms, wc.DefinitionLevels.Slice(start, entries), wc.Field.MaxDefinitionLevel);
             }
 
+            Data.DataColumnStatistics? stats = paged ? null : wc.Statistics;
             if(wc.HasDictionary) {
                 // dictionary indexes are always encoded with RLE
                 int bitWidth = wc.Dictionary.Length.GetBitWidth();  // bit width is determined by the dictionary size
                 ms.WriteByte((byte)bitWidth);   // bit width is stored as 1 byte before encoded data
-                RleBitpackedHybridEncoder.Encode(ms, wc.DictionaryIndexes, bitWidth);
+                RleBitpackedHybridEncoder.Encode(ms, wc.DictionaryIndexes.Slice(valueStart, valueCount), bitWidth);
             } else {
+                ReadOnlySpan<T> values = wc.Values.Slice(valueStart, valueCount);
                 if(deltaEncode) {
-                    DeltaBinaryPackedEncoder.Encode(wc.Values, ms, wc.Statistics);
+                    DeltaBinaryPackedEncoder.Encode(values, ms, stats);
                 } else if(byteSplitStreamEncode) {
-                    ByteStreamSplitEncoder.Encode(wc.Values, ms);
+                    ByteStreamSplitEncoder.Encode(values, ms);
                     // the statistics the plain encoder computes; writing to Stream.Null costs nothing
-                    ParquetPlainEncoder.Encode(wc.Values, Stream.Null, tse, wc.Statistics);
+                    if(stats != null)
+                        ParquetPlainEncoder.Encode(values, Stream.Null, tse, stats);
                 } else {
-                    ParquetPlainEncoder.Encode(wc.Values,
-                        ms,
-                        tse,
-                        wc.HasDictionary ? null : wc.Statistics);
+                    ParquetPlainEncoder.Encode(values, ms, tse, stats);
                 }
             }
+            valueStart += valueCount;
 
-            dph.Statistics = _options.WriteStatistics ? wc.Statistics.ToThriftStatistics(tse) : null;
+            // a page's statistics are the chunk's only when it is the chunk's one page
+            dph.Statistics = _options.WriteStatistics && !paged ? wc.Statistics.ToThriftStatistics(tse) : null;
             await CompressAndWriteAsync(ph, ms, r, cancellationToken);
         }
 
         return r;
+    }
+
+    /// <summary>
+    /// The level ranges of a chunk's data pages: one page, unless <paramref name="maxValues"/> is set and the chunk
+    /// has more levels, in which case each page ends at the first row start (repetition level 0) at or after it.
+    /// </summary>
+    internal static List<(int Start, int End)> SplitPages<T>(WritingColumn<T> wc, int? maxValues) where T : struct {
+        int total = wc.NumValues;
+        var pages = new List<(int, int)>();
+        if(maxValues is not int limit || limit <= 0 || total <= limit) {
+            pages.Add((0, total));
+            return pages;
+        }
+        ReadOnlySpan<int> repetition = wc.HasRepetitionLevels ? wc.RepetitionLevels : default;
+        int start = 0;
+        while(start < total) {
+            int end = Math.Min(start + limit, total);
+            if(!repetition.IsEmpty)
+                while(end < total && repetition[end] != 0)
+                    end++;
+            pages.Add((start, end));
+            start = end;
+        }
+        return pages;
     }
 
     private static void WriteLevels(Stream s, ReadOnlySpan<int> levels, int maxValue) {
