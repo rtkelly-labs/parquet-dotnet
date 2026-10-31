@@ -43,6 +43,7 @@ namespace Lake.Stack {
 
             var rebaselineOnto = new Option<string?>("--onto") { Description = "Rebase onto this ref instead of upstream's branch (an upstream release tag, say)" };
             var resume = new Option<bool>("--continue") { Description = "Resume a rebaseline: after resolving a conflict or fixing a change, or to publish one" };
+            var rebased = new Option<bool>("--rebased") { Description = "Start from a stack you already rebased onto upstream (with jj): check, test and stage it" };
             var abort = new Option<bool>("--abort") { Description = "Give up a rebaseline and put the stack branch back where it was" };
             var showStatus = new Option<bool>("--status") { Description = "Show where a rebaseline in progress stands, and its staged build's CI result" };
             var stage = new Option<string?>("--stage") { Description = "Push the verified stack to staging/<name> (a version such as v0.1.1) for CI to build" };
@@ -52,11 +53,12 @@ namespace Lake.Stack {
             var rebaselineRemote = new Option<string>("--remote") { Description = "Default: origin", DefaultValueFactory = _ => "origin" };
             var rebaselineBranch = new Option<string>("--branch") { Description = "The stack branch (default: master)", DefaultValueFactory = _ => "master" };
             var rebaseline = new Command("rebaseline", "Move the stack onto a newer upstream, deliberately: rebase, verify, stage for CI, and publish only with --push") {
-                rebaselineOnto, resume, abort, showStatus, stage, publishIt, skipCiCheck, noTest, rebaselineRemote, rebaselineBranch,
+                rebaselineOnto, resume, rebased, abort, showStatus, stage, publishIt, skipCiCheck, noTest, rebaselineRemote, rebaselineBranch,
             };
             rebaseline.SetAction(parse => Guard(error, () => RebaselineCommand.Run(Context(parse), new RebaselineOptions(
                 Onto: parse.GetValue(rebaselineOnto),
                 Continue: parse.GetValue(resume),
+                Rebased: parse.GetValue(rebased),
                 Abort: parse.GetValue(abort),
                 Status: parse.GetValue(showStatus),
                 Stage: parse.GetValue(stage),

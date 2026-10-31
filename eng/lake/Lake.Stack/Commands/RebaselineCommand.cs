@@ -5,6 +5,7 @@ namespace Lake.Stack.Commands;
 public sealed record RebaselineOptions(
     string? Onto = null,
     bool Continue = false,
+    bool Rebased = false,
     bool Abort = false,
     bool Status = false,
     string? Stage = null,
@@ -69,30 +70,49 @@ public static class RebaselineCommand {
                 throw new StackException($"check out {options.Branch} first: a rebaseline moves the stack branch");
             }
             git.Run("fetch", "--quiet", options.Remote);
-            from = git.Resolve("HEAD");
             string? published = git.TryResolve($"{options.Remote}/{options.Branch}");
-            if(published != from) {
-                throw new StackException($"{options.Branch} is not {options.Remote}/{options.Branch}: push or reset it first, so the rebaseline starts from what is published");
-            }
             onto = options.Onto ?? context.Upstream;
-            git.Run("config", FromKey, from);
-            git.Run("config", OntoKey, onto);
+            if(options.Rebased) {
+                // Already rebased with another tool (jj): start from what is published, check the rebased stack.
+                from = published ?? throw new StackException($"{options.Remote}/{options.Branch} does not exist");
+                context.FetchRemoteOf(onto);
+                string ontoSha = git.Resolve(onto);
+                if(!git.IsAncestor(ontoSha, "HEAD")) {
+                    throw new StackException($"{options.Branch} is not on {onto}: rebase it onto upstream first (with jj: jj rebase -b {options.Branch} -d {onto.Replace('/', '@')}; docs/maintaining.md)");
+                }
+                if(git.Resolve("HEAD") == from) {
+                    context.Out.WriteLine("Nothing to do: the stack is what is published.");
+                    return ExitCodes.Ok;
+                }
+                git.Run("config", FromKey, from);
+                git.Run("config", OntoKey, onto);
+                var rebased = new SyncResult(from, git.Resolve("HEAD"), git.MergeBase(from, ontoSha), git.MergeBase("HEAD", ontoSha), [], [], null);
+                context.Out.Write(SyncCommand.Report(context, rebased, onto));
+            } else {
+                from = git.Resolve("HEAD");
+                if(published != from) {
+                    throw new StackException($"{options.Branch} is not {options.Remote}/{options.Branch}: push or reset it first, so the rebaseline starts from what is published");
+                }
+                git.Run("config", FromKey, from);
+                git.Run("config", OntoKey, onto);
 
-            SyncResult sync = SyncCommand.Sync(context, new SyncOptions(onto, Fetch: true));
-            context.Out.Write(SyncCommand.Report(context, sync, onto));
-            if(sync.Conflict != null) {
-                context.Out.WriteLine();
-                context.Out.WriteLine("Then: rebaseline --continue (or rebaseline --abort to put everything back).");
-                return ExitCodes.Problems;
-            }
-            if(!sync.Changed) {
-                Clear(git);
-                context.Out.WriteLine("Nothing to do: the stack is already on upstream with nothing to fold in.");
-                return ExitCodes.Ok;
+                SyncResult sync = SyncCommand.Sync(context, new SyncOptions(onto, Fetch: true));
+                context.Out.Write(SyncCommand.Report(context, sync, onto));
+                if(sync.Conflict != null) {
+                    context.Out.WriteLine();
+                    context.Out.WriteLine("Then: rebaseline --continue (or rebaseline --abort to put everything back).");
+                    return ExitCodes.Problems;
+                }
+                if(!sync.Changed) {
+                    Clear(git);
+                    context.Out.WriteLine("Nothing to do: the stack is already on upstream with nothing to fold in.");
+                    return ExitCodes.Ok;
+                }
             }
         }
 
         string head = git.Resolve("HEAD");
+
         if(options.Continue) {
             context.Out.WriteLine($"Rebaseline from {from[..10]} onto {onto}: now {head[..10]}.");
         }

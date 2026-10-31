@@ -75,12 +75,24 @@ jobs:
       - name: Test the stack tool
         run: dotnet test eng/lake/Lake.Stack.Tests --configuration Release
 
+      # Subjects and titles are commitlint's (commitlint.config.mjs); records and the stack's structure are
+      # lake-stack's.
+      - name: Lint the pull request title
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$TITLE" | npx --yes @commitlint/cli@21.2.3
+
       - name: Check the pull request
         if: github.event_name == 'pull_request'
         env:
           TITLE: ${{ github.event.pull_request.title }}
           BASE: ${{ github.event.pull_request.base.sha }}
         run: dotnet run --project eng/lake/Lake.Stack --configuration Release -- check-pr --title "$TITLE" --base "$BASE"
+
+      - name: Lint the stack's commit subjects
+        if: github.event_name != 'pull_request'
+        run: npx --yes @commitlint/cli@21.2.3 --from "$(git merge-base HEAD upstream/master)" --to HEAD
 
       - name: Check the stack
         if: github.event_name != 'pull_request'
@@ -358,6 +370,15 @@ jobs:
           git fetch --quiet upstream master
           echo "UPSTREAM_SHA=$(git merge-base HEAD upstream/master)" >> "$GITHUB_ENV"
 
+      # the changes this release carries, one line each (cliff.toml)
+      - name: Write the release notes
+        run: |
+          set -euo pipefail
+          { echo "Lake.Parquet $VERSION, built on aloneguid/parquet-dotnet@$UPSTREAM_SHA."; echo;
+            npx --yes git-cliff@2.14.2 --config cliff.toml "$UPSTREAM_SHA..HEAD"; } > "$RUNNER_TEMP/notes.md"
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+
       - name: Tag and release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -365,4 +386,4 @@ jobs:
         run: >-
           gh release create "lake-v$VERSION" ./artifacts/*.nupkg --repo "$GITHUB_REPOSITORY"
           --target "$GITHUB_SHA" --title "Lake.Parquet $VERSION"
-          --notes "Lake.Parquet $VERSION, built on aloneguid/parquet-dotnet@$UPSTREAM_SHA. It carries the changes in docs/changes/ at this tag, one commit each above that upstream commit."
+          --notes-file "$RUNNER_TEMP/notes.md"

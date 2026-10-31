@@ -1,0 +1,30 @@
+# Release notes for Lake.Parquet (git-cliff): the changes a release carries on top of upstream, one line per
+# `lake(NNNN)` commit. Run over the stack only, from where it leaves upstream:
+#   npx git-cliff@2.14.2 --config cliff.toml "$(git merge-base HEAD upstream/master)..HEAD"
+# lake.yml's publish job writes the release's notes with it.
+
+[changelog]
+header = ""
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}\
+### {{ group | striptags | trim }}
+{% for commit in commits %}\
+- {{ commit.message | split(pat="\n") | first | trim | replace(from="lake(", to="**") | replace(from="): ", to="** ") }}
+{% endfor %}
+{% endfor %}\
+"""
+footer = "Each change's record, with its evidence and upstream status, is docs/changes/NNNN-name.md."
+trim = true
+
+[git]
+conventional_commits = false
+filter_unconventional = false
+sort_commits = "oldest"
+commit_preprocessors = []
+commit_parsers = [
+    # pending fixups are folded into their change at the next rebaseline
+    { message = "^(fixup|squash|amend)! ", skip = true },
+    { message = "^lake\\(0001\\)", skip = true },
+    { message = "^lake\\((?P<n>\\d{4})\\): ", group = "Changes carried on top of upstream" },
+    { message = ".*", group = "Other commits (should not exist: see lake-stack check)" },
+]

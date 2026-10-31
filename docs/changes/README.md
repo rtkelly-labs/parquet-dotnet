@@ -24,7 +24,7 @@ upstream/master ── 0001 ── 0002 ── 0003 ── ... ── 0025      
 - **The stack is rebaselined onto upstream, never merged**, when the maintainer decides to
   (`lake-stack rebaseline`, [`../maintaining.md`](../maintaining.md)).
 
-`lake-stack check` enforces the first three, and CI runs it on every push and pull request.
+commitlint (`commitlint.config.mjs`) checks every commit subject and pull request title, and `lake-stack check` enforces the first three, and CI runs it on every push and pull request.
 
 ## Record format
 

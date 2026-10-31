@@ -197,3 +197,46 @@ public class RebaselineTests {
         Assert.Empty(repo.Origin.Lines("tag", "--list", "lake/stack/*"));
     }
 }
+
+public class RebasedElsewhereTests {
+
+    [Fact]
+    public void A_stack_rebased_with_another_tool_is_checked_staged_and_promoted() {
+        using var repo = new TestRepo();
+        repo.AddChange("0002", "fix-a", "Fix A", files: ("src/A.cs", TestRepo.Lines("a", 20, (3, "fixed"))));
+        repo.Fork.Run("push", "--quiet", "origin", "master");
+        string published = repo.Fork.Resolve("HEAD");
+        string upstream = repo.UpstreamCommit("upstream: new", ("src/D.cs", "d\n"));
+        // what `jj rebase -b master -d master@upstream` does, done here with git
+        repo.Fork.Run("rebase", "--quiet", "upstream/master");
+        var output = new StringWriter();
+        var context = new StackContext(repo.Fork, "upstream/master", output, new StringWriter());
+
+        int code = RebaselineCommand.Run(context, new RebaselineOptions(Rebased: true, Stage: "v0.1.1", RunTests: _ => 0, Ci: (_, _) => CiState.Success));
+
+        Assert.Equal(0, code);
+        Assert.Contains("Rebased onto", output.ToString());
+        Assert.Equal(repo.Fork.Resolve("HEAD"), repo.Origin.Resolve("refs/heads/staging/v0.1.1"));
+        Assert.Equal(published, repo.Origin.Resolve("refs/heads/master"));
+
+        code = RebaselineCommand.Run(context, new RebaselineOptions(Continue: true, Push: true, RunTests: _ => 0, Ci: (_, _) => CiState.Success));
+
+        Assert.Equal(0, code);
+        Assert.True(repo.Origin.IsAncestor(upstream, "refs/heads/master"));
+        Assert.Equal(published, repo.Origin.Resolve(Assert.Single(repo.Origin.Lines("tag", "--list", "lake/stack/*"))));
+    }
+
+    [Fact]
+    public void A_stack_not_on_upstream_is_refused() {
+        using var repo = new TestRepo();
+        repo.AddChange("0002", "fix-a", "Fix A", files: ("src/A.cs", "a\n"));
+        repo.Fork.Run("push", "--quiet", "origin", "master");
+        repo.UpstreamCommit("upstream: new", ("src/D.cs", "d\n"));
+        var context = new StackContext(repo.Fork, "upstream/master", new StringWriter(), new StringWriter());
+
+        StackException e = Assert.Throws<StackException>(() =>
+            RebaselineCommand.Run(context, new RebaselineOptions(Rebased: true, RunTests: _ => 0)));
+
+        Assert.Contains("is not on upstream/master", e.Message);
+    }
+}

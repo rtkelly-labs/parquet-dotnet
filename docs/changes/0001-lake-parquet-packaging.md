@@ -19,6 +19,9 @@ upstream file. It is the bottom commit of the stack, so every change is rebased 
 - `eng/lake/Lake.Stack` (C#) and its tests: checks the stack and pull requests into it, reports its
   changes, rebaselines it onto upstream when the maintainer runs it (rebase, check, test, stage on
   `staging/<name>` for CI, then promote to `master` once that build is green), rebuilds the `lake/change/*` branches, and moves other branches onto a new stack.
+- `commitlint.config.mjs` (commit subjects and pull request titles) and `cliff.toml` (release notes, with
+  git-cliff): existing tools where one fits, as `docs/maintaining.md` describes, with jj recommended for
+  editing and rebasing the stack locally.
 - `eng/lake/RenameNamespace.cs`, `eng/lake/Lake.Parquet.targets`, `eng/lake/VerifyLakeAssembly.cs`
   and `eng/lake/PACKAGE_README.md`: the build-time rename from `Parquet` to `Lake.Parquet` and the
   package's identity.

@@ -81,7 +81,7 @@ dotnet test eng/lake/Lake.Stack.Tests # its tests (CI runs them before using it)
 
 | Command | What it does | Moves refs? |
 |---|---|---|
-| `check` | every commit above upstream is `lake(NNNN)` (or a pending `fixup!`), one per change, with a valid record in that commit; no merges; `depends_on` only names changes below; an addition edits no upstream file | no |
+| `check` | every commit above upstream is `lake(NNNN)` (or a pending `fixup!`), one per change, with a valid record in that commit; no merges; `depends_on` only names changes below; an addition edits no upstream file (commit subjects themselves are also linted by commitlint) | no |
 | `check-pr --title <t> --base <sha>` | a pull request's title names its change (or is a fixup), and a new change brings its record | no |
 | `status` | each change, its kind, status and how many code files it touches | no |
 | `rebaseline` | **the step that moves the fork onto a newer upstream**: rebase (folding in fixups), report, check, run the test suite; `--stage <name>` pushes it to `staging/<name>` for CI; `--status` shows the staged build's result; `--push` publishes it once that build is green; `--continue` resumes after a conflict or a fix; `--abort` puts everything back | the local `master`; `staging/<name>`; with `--push`, the remote's `master`, a tag and `lake/change/*` |
@@ -158,6 +158,48 @@ It stops at the first thing that needs you, and tells you what to run next:
 staging branch. Until it is pushed or aborted, the starting point and the staging branch are kept in
 git config (`lake.rebaseline.*`), so `--continue` and `--status` work across sessions. Publishing needs push rights that may force-push `master` and create tags (a
 repository admin, past the branch rules).
+
+### With jj
+
+[jj](https://jj-vcs.github.io/jj/) works inside this git clone ("colocated"): git, CI and GitHub see ordinary
+commits, and you get jj's model for editing the stack. It is the recommended way to rebaseline and to edit
+changes; `lake-stack` then checks, tests, stages and promotes what jj produced.
+
+Set it up once in your clone:
+
+```bash
+jj git init --colocate
+jj git remote add upstream https://github.com/aloneguid/parquet-dotnet.git   # if git does not have it yet
+# upstream's history and every tagged stack are immutable: jj refuses to rewrite them
+jj config set --repo 'revset-aliases."immutable_heads()"' 'master@upstream | tags()'
+jj config set --repo 'revset-aliases.stack' 'master@upstream..master'
+jj config set --repo 'revset-aliases.fixups' 'stack & description(glob:"fixup! *")'
+```
+
+Rebaseline:
+
+```bash
+jj git fetch --remote upstream && jj git fetch --remote origin
+jj rebase -b master -d master@upstream          # the whole stack, in one step; conflicts are recorded, not fatal
+# fold each pending fixup into its change
+for f in $(jj log -r fixups --reversed --no-graph -T 'change_id.short() ++ "\n"'); do
+  n=$(jj log -r "$f" --no-graph -T 'description.first_line()' | sed -E 's/^fixup! lake\(([0-9]{4})\).*/\1/')
+  jj squash --from "$f" --into "$(jj log -r "stack & description(glob:\"lake($n):*\")" --no-graph -T 'change_id.short()')" --use-destination-message
+done
+jj log -r 'stack & conflicts()'                 # any change upstream conflicts with: jj edit it, resolve, jj squash
+lake-stack rebaseline --rebased --stage v0.1.1   # check, test, stage for CI
+lake-stack rebaseline --continue --push          # promote once lake-ci is green on the staging branch
+```
+
+`--rebased` takes the published `master` as the old head and checks the stack you rebased, instead of rebasing
+itself. Everything after that is the same as above.
+
+Edit a change in the middle of the stack: `jj edit <change>` (or `jj new <change>`, make the edit, `jj squash`),
+and every change above it is rebased for you. `jj absorb` sends each hunk of a working-copy edit to the change
+that last touched those lines. `jj op log` and `jj undo` take back any of it locally; the `lake/stack/*` tags
+are what keep earlier stacks reachable for everyone else.
+
+jj does not run git hooks, so nothing checks commit subjects locally; CI does (commitlint).
 
 ### When the rebase stops
 
