@@ -108,6 +108,25 @@ buffers, `ReadAsync` into `T?[]`, strings as chars or as their UTF-8 bytes), wit
 `evidence: benchmark` quotes these numbers before and after in its record. The `*_Utf8` benchmarks need the fork
 (`lake(0017)`): upstream rejects `ReadOnlyMemory<byte>` for string fields.
 
+## Profiling
+
+The benchmark project also runs one scenario in a loop for a profiler (`profile <scenario> [seconds]`; the
+scenarios are `read-int64`, `read-double`, `read-timestamp`, `read-decimal`, `read-strings`, `read-strings-utf8`,
+`write-int64`, `write-double`, `write-timestamp`, `write-decimal`, `write-strings`). It prints the time and
+allocations per run and the collections and pause time it caused:
+
+```bash
+cd eng/lake/Lake.Parquet.Benchmarks && dotnet build -c Release
+dotnet tool install -g dotnet-trace
+dotnet-trace collect --profile dotnet-sampled-thread-time --format Speedscope -o write-decimal.nettrace \
+    -- dotnet bin/Release/net10.0/Lake.Parquet.Benchmarks.dll profile write-decimal 10
+```
+
+Open `write-decimal.speedscope.json` at [speedscope.app](https://www.speedscope.app) for the flame graph
+("Left Heavy" merges the runs). For allocations by type and stack, add `--profile gc-verbose`. On a small VM,
+a large array's first use costs page faults that show up as `Memmove` in whatever touches it first: check the
+allocations per run before reading those frames as copying.
+
 ## The suite on the renamed build
 
 `lake.yml` renames a copy of the source to the `Lake.Parquet` namespace and runs `src/Parquet.Test` against it,
