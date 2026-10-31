@@ -777,9 +777,22 @@ static class ParquetPlainEncoder {
         destination.Write(bytes);
     }
 
+    // INT96: 12 bytes of little-endian two's complement per value (BigInteger holds an array, so it cannot be cast to bytes)
     public static void Encode(ReadOnlySpan<BigInteger> data, Stream destination) {
-        ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(data);
-        destination.Write(bytes);
+        Span<byte> buffer = stackalloc byte[12];
+        foreach(BigInteger value in data) {
+            buffer.Fill(value.Sign < 0 ? (byte)0xFF : (byte)0);
+            if(!value.TryWriteBytes(buffer, out _))
+                throw new ParquetException($"{value} does not fit in INT96");
+            destination.Write(buffer);
+        }
+    }
+
+    public static int Decode(Span<byte> source, Span<BigInteger> data) {
+        int count = Math.Min(data.Length, source.Length / 12);
+        for(int i = 0; i < count; i++)
+            data[i] = new BigInteger(source.Slice(i * 12, 12));
+        return count;
     }
 
     public static int Decode<T>(Span<byte> source, Span<T> data) where T : struct {
