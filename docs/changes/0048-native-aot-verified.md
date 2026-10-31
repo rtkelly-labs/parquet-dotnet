@@ -43,8 +43,13 @@ own AOT consumers. Analyzer-clean is a claim; this makes it a build error to bre
 
 ## Evaluation
 
-Against the stripped, renamed package, on Linux x64, Windows x64 and macOS arm64 in CI: published with no warning;
-`api` 844 of 844; 5,000 generated cases; 1,000 files each way between the builds; 762 files byte-identical (138 of them
+What covers all of the code, not only what the suite runs: `IsAotCompatible` turns on the trimming, AOT and
+single-file analyzers over every method of the package, as errors, so a finding anywhere fails the Lake build; and
+publishing the suite with `PublishAot` and `TrimmerSingleWarn=false` analyses the whole program with each warning
+reported on its own. Both report none. The native runs then show that the code behaves the same compiled ahead of time.
+
+Against the stripped, renamed package, on Linux x64, Windows x64 and macOS arm64 in CI (run 41244509500, at `a6a843b0`): published with no warning;
+`api` 845 of 845; 5,000 generated cases; 1,000 files each way between the builds; 762 files byte-identical (138 of them
 gzip cases, uncompressed); 144 corpus files decoded alike and the malformed one refused alike. The suite also caught a
 path the library-level analyzer had not (`SchemaEncoder.GetDecimalDataField`), fixed in `lake(0047)`, and that the
 harness's own generic `Integer<T>` needed the annotation, which is what a consumer generic over `T` sees.
