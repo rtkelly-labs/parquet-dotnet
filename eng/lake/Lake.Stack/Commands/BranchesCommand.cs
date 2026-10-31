@@ -68,7 +68,7 @@ public static class BranchesCommand {
     }
 
     /// <summary>Applies one stack commit without its record, keeping its message, author and committer.</summary>
-    static bool Replay(Git tree, StackCommit commit) {
+    internal static bool Replay(Git tree, StackCommit commit) {
         if(tree.TryRun("cherry-pick", "--no-commit", commit.Sha).ExitCode != 0) {
             tree.TryRun("cherry-pick", "--abort");
             tree.TryRun("reset", "--quiet", "--hard");

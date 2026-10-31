@@ -9,6 +9,14 @@ public enum ChangeKind {
     Code,
 }
 
+/// <summary>What shows a code change is needed (verify checks the failing-test kind).</summary>
+public enum ChangeEvidence {
+    /// <summary>Its tests fail, or do not compile, without its library code.</summary>
+    FailingTest,
+    /// <summary>A measured improvement (performance): its tests guard behaviour and pass either way.</summary>
+    Benchmark,
+}
+
 public enum ChangeStatus {
     ForkOnly,
     ProposedUpstream,
@@ -28,11 +36,12 @@ public sealed partial record ChangeRecord(
     ChangeKind Kind,
     ChangeStatus Status,
     IReadOnlyList<string> DependsOn,
-    string? Upstream) {
+    string? Upstream,
+    ChangeEvidence Evidence = ChangeEvidence.FailingTest) {
 
     public const string Directory = "docs/changes";
 
-    static readonly HashSet<string> KnownKeys = ["title", "kind", "status", "depends_on", "upstream", "upstream_unit"];
+    static readonly HashSet<string> KnownKeys = ["title", "kind", "status", "depends_on", "upstream", "upstream_unit", "evidence"];
 
     /// <summary><c>NNNN-name</c>, which is also the change branch's name under lake/change/.</summary>
     public string Name => System.IO.Path.GetFileNameWithoutExtension(Path);
@@ -86,6 +95,13 @@ public sealed partial record ChangeRecord(
                 break;
         }
 
+        ChangeEvidence evidence = ChangeEvidence.FailingTest;
+        switch(fields.GetValueOrDefault("evidence")) {
+            case null or "failing-test": break;
+            case "benchmark": evidence = ChangeEvidence.Benchmark; break;
+            case var other: problems.Add($"evidence is '{other}', not failing-test or benchmark"); break;
+        }
+
         var dependsOn = new List<string>();
         if(fields.TryGetValue("depends_on", out string? list)) {
             if(!list.StartsWith('[') || !list.EndsWith(']')) {
@@ -107,7 +123,7 @@ public sealed partial record ChangeRecord(
         if(problems.Count > 0) {
             throw new RecordException(path, problems);
         }
-        return new ChangeRecord(number, path, title, kind, status, dependsOn, fields.GetValueOrDefault("upstream"));
+        return new ChangeRecord(number, path, title, kind, status, dependsOn, fields.GetValueOrDefault("upstream"), evidence);
     }
 
     static Dictionary<string, string> ReadFrontmatter(string text, List<string> problems) {

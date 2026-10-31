@@ -21,6 +21,11 @@ on:
     branches: [master, "staging/**"]
   workflow_dispatch:
     inputs:
+      verify_changes:
+        description: "Verify every change alone (lake-stack verify), as on staging branches"
+        required: false
+        default: false
+        type: boolean
       publish:
         description: "Publish the version in eng/lake/Lake.Parquet.targets to nuget.org and tag lake-v<version>"
         required: false
@@ -180,20 +185,96 @@ jobs:
           if-no-files-found: error
 
   # The single required check.
+  # Each code change alone on upstream (docs/testing.md, "Change verification"): on staging branches, so a
+  # rebaseline is promoted only when every change still proves itself on the new upstream, and on demand.
+  changes:
+    name: changes
+    if: startsWith(github.ref, 'refs/heads/staging/') || inputs.verify_changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: List the code changes
+        id: list
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/aloneguid/parquet-dotnet.git
+          git fetch --quiet upstream master
+          list=$(dotnet run --project eng/lake/Lake.Stack --configuration Release -- verify --list)
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          echo "$list"
+
+  verify:
+    name: verify ${{ matrix.change }}
+    needs: [changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        change: ${{ fromJSON(needs.changes.outputs.list) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.10"
+
+      - name: Install Python dependencies
+        run: pip install pyarrow pandas
+
+      - name: Verify the change alone
+        env:
+          CHANGE: ${{ matrix.change }}
+        run: |
+          set -euo pipefail
+          git config user.name "lake-ci"
+          git config user.email "lake-ci@users.noreply.github.com"
+          git remote add upstream https://github.com/aloneguid/parquet-dotnet.git
+          git fetch --quiet upstream master
+          dotnet run --project eng/lake/Lake.Stack --configuration Release -- verify "$CHANGE"
+
+  # The single required check. Jobs that do not run for an event (verify outside staging) are skipped,
+  # which counts as passing; anything that ran must have succeeded.
   lake-ci:
     name: lake-ci
     if: always()
-    needs: [stack, build]
+    needs: [stack, build, changes, verify]
     runs-on: ubuntu-latest
     steps:
-      - name: Require stack and build
+      - name: Require every job that ran
         env:
-          STACK_RESULT: ${{ needs.stack.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          echo "stack: $STACK_RESULT, build: $BUILD_RESULT"
-          [ "$STACK_RESULT" = "success" ] || { echo "::error::stack did not succeed ($STACK_RESULT)"; exit 1; }
-          [ "$BUILD_RESULT" = "success" ] || { echo "::error::build did not succeed ($BUILD_RESULT)"; exit 1; }
+          set -euo pipefail
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          failed=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")')
+          [ -z "$failed" ] || { echo "::error::did not succeed: $failed"; exit 1; }
+          for required in stack build; do
+            [ "$(echo "$RESULTS" | jq -r ".$required.result")" = "success" ] || { echo "::error::$required did not succeed"; exit 1; }
+          done
 
   publish:
     name: publish

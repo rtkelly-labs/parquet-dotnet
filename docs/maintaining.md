@@ -88,6 +88,7 @@ dotnet test eng/lake/Lake.Stack.Tests # its tests (CI runs them before using it)
 | `sync` | only the rebase part of `rebaseline`, for trying a rebase out locally | the current branch |
 | `branches` | regenerates every `lake/change/*`; `--push origin` force-pushes them and deletes those of retired changes | `lake/change/*` |
 | `rewire [--apply] (<branch>… \| --all)` | moves each branch's own commits onto the current stack; a dry run without `--apply` | the named branches |
+| `verify [NNNN…] [--list]` | proves each code change alone: its branch passes the suite, and the suite fails without its library code (docs/testing.md) | no |
 | `promote --from <old> --to <new>` | the publishing part of `rebaseline --push`: refuses a new stack that fails `check`, tags the old head `lake/stack/<date>-<sha>`, and moves the remote's `master` with a lease on the old head | the remote's `master`, a tag |
 
 `--upstream <ref>` (or `LAKE_UPSTREAM`; default `upstream/master`) sets the upstream every command
@@ -99,7 +100,7 @@ switched on, so a conflict resolved once is resolved again automatically on the 
 branches are rebuilt with each source commit's own author, committer and dates, so an unchanged change
 gives the same commit and pushing it again is a no-op.
 
-The code is laid out by command: `Commands/RebaselineCommand.cs`, `SyncCommand.cs`, `BranchesCommand.cs`, `RewireCommand.cs`,
+The code is laid out by command: `Commands/RebaselineCommand.cs`, `VerifyCommand.cs`, `SyncCommand.cs`, `BranchesCommand.cs`, `RewireCommand.cs`,
 `PromoteCommand.cs`, `CheckCommand.cs`, `CheckPrCommand.cs` and `StatusCommand.cs`, over
 `StackModel.cs` (the commits above upstream and their records), `ChangeRecord.cs` (the record format)
 and `Git.cs` (git, run with an argument list, never through a shell). A change to how the process
@@ -136,8 +137,10 @@ It stops at the first thing that needs you, and tells you what to run next:
    then `lake-stack rebaseline --continue`.
 4. **Stage it for CI**: `lake-stack rebaseline --continue --stage v0.1.1` (or pass `--stage` to the
    first `rebaseline`, which stages as soon as the local checks pass). It pushes the rebased stack to
-   `staging/v0.1.1`, where `lake.yml` builds it exactly as it builds `master`: the stack rules, the
-   tool's tests, the renamed `Lake.Parquet` build, the whole suite on .NET 8 and 10, and the package.
+   `staging/v0.1.1`, where `lake.yml` builds it exactly as it builds `master` (the stack rules, the
+   tool's tests, the renamed `Lake.Parquet` build, the whole suite on .NET 8 and 10, and the package), and
+   also verifies every change alone on the new upstream, one job per change (`lake-stack verify`,
+   docs/testing.md).
    `origin/master` is untouched; consumers see nothing yet.
 5. **Evaluate.** `lake-stack rebaseline --status` shows where it stands and the staged build's
    `lake-ci` result (read through the `gh` CLI). Look at the range-diff and `lake-stack status` too. If

@@ -86,13 +86,19 @@ namespace Lake.Stack {
             promote.SetAction(parse => Guard(error, () => PromoteCommand.Run(Context(parse), new PromoteOptions(
                 parse.GetValue(from)!, parse.GetValue(to)!, parse.GetValue(remote)!, parse.GetValue(branch)!))));
 
+            var verifyList = new Option<bool>("--list") { Description = "Only print the code changes as a JSON array (a CI matrix)" };
+            var testProject = new Option<string>("--test-project") { Description = $"Default: {VerifyCommand.DefaultTestProject}", DefaultValueFactory = _ => VerifyCommand.DefaultTestProject };
+            var changeNumbers = new Argument<string[]>("change") { Arity = ArgumentArity.ZeroOrMore, Description = "Changes to verify (NNNN); all code changes when none" };
+            var verify = new Command("verify", "Prove each code change alone: its branch passes the suite, and fails without its library code") { head, verifyList, testProject, changeNumbers };
+            verify.SetAction(parse => Guard(error, () => VerifyCommand.Run(Context(parse), parse.GetValue(head)!, parse.GetValue(changeNumbers) ?? [], parse.GetValue(verifyList), parse.GetValue(testProject)!)));
+
             var title = new Option<string>("--title") { Description = "The pull request's title", Required = true };
             var prBase = new Option<string>("--base") { Description = "The pull request's base commit", Required = true };
             var checkPr = new Command("check-pr", "Check a pull request into the stack: its title names the change, and a new change brings its record") { title, prBase, head };
             checkPr.SetAction(parse => Guard(error, () => CheckPrCommand.Run(Context(parse), parse.GetValue(title)!, parse.GetValue(prBase)!, parse.GetValue(head)!)));
 
             var root = new RootCommand("Keeps Lake.Parquet's change stack on top of upstream (docs/maintaining.md)") {
-                repo, upstream, check, checkPr, status, rebaseline, sync, branches, rewire, promote,
+                repo, upstream, check, checkPr, status, verify, rebaseline, sync, branches, rewire, promote,
             };
             return root.Parse(args).Invoke(new InvocationConfiguration { Output = output, Error = error });
         }

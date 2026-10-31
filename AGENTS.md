@@ -38,6 +38,7 @@ lake-stack check                             # the stack follows the rules
 lake-stack status                            # the changes and their status
 lake-stack rewire --all                      # which branches are not on the current stack (dry run)
 dotnet test eng/lake/Lake.Stack.Tests        # the stack tool's own tests
+lake-stack verify 0026                       # one change alone: passes, and fails without its code
 dotnet build src/Parquet.slnx
 dotnet test src/Parquet.Test/Parquet.Test.csproj
 ```

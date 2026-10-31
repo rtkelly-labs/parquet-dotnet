@@ -37,6 +37,7 @@ kind: code                 # addition (fork-only files) | code (changes upstream
 status: fork-only          # fork-only | proposed-upstream | upstreamed | superseded
 depends_on: [0008]         # changes below it that it needs, or overlaps line for line
 upstream: https://github.com/aloneguid/parquet-dotnet/issues/...   # optional; any issue or PR, ours or not
+evidence: failing-test     # optional: failing-test (default) | benchmark, for performance changes
 ---
 ```
 
