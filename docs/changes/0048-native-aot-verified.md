@@ -38,7 +38,8 @@ own AOT consumers. Analyzer-clean is a claim; this makes it a build error to bre
     any other failure, or that file decoding, fails the run.
 - **CI:** the `aot` job builds the package as published (members stripped, renamed), builds the suite on the JIT and
   publishes it natively against that package, runs all of the above (3,000 fixed and 2,000 fresh seeds), and `lake-ci`
-  requires it.
+  requires it. It runs on Linux x64 and Windows x64; the macOS arm64 leg, on runners that cost ten times as much, runs
+  only on a pull request labelled `macos` or a run dispatched with `macos`.
 
 ## Evaluation
 
