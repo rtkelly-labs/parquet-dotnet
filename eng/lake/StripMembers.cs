@@ -82,7 +82,26 @@ foreach (IGrouping<string, Entry> file in entries.GroupBy(e => e.File))
     }
     if (!printHashes && doomed.Count > 0)
     {
-        File.WriteAllText(path, tree.RemoveNodes(doomed, SyntaxRemoveOptions.KeepNoTrivia)!.ToFullString());
+        // A member whose leading trivia holds preprocessor directives (and the disabled code between them, such as an
+        // #if NET7_0_OR_GREATER block before it) keeps that trivia; any other member goes with its comments.
+        static bool HasDirectives(SyntaxNode m) => m.GetLeadingTrivia().Any(t => t.IsDirective || t.IsKind(SyntaxKind.DisabledTextTrivia));
+        var annotation = new SyntaxAnnotation("lake-strip");
+        tree = tree.ReplaceNodes(doomed, (_, m) => m.WithAdditionalAnnotations(annotation));
+        // one at a time: trivia a removed member keeps moves to the next token, which may start another doomed member
+        while (tree.GetAnnotatedNodes(annotation).FirstOrDefault() is SyntaxNode next)
+        {
+            if (HasDirectives(next))
+            {
+                // the directives stay; the member's own documentation goes with it
+                tree = tree.ReplaceNode(next, next.WithLeadingTrivia(next.GetLeadingTrivia().Where(t =>
+                    !t.IsKind(SyntaxKind.SingleLineDocumentationCommentTrivia) && !t.IsKind(SyntaxKind.MultiLineDocumentationCommentTrivia))));
+                next = tree.GetAnnotatedNodes(annotation).First();
+            }
+            tree = tree.RemoveNode(next, HasDirectives(next)
+                ? SyntaxRemoveOptions.KeepLeadingTrivia | SyntaxRemoveOptions.KeepUnbalancedDirectives
+                : SyntaxRemoveOptions.KeepNoTrivia | SyntaxRemoveOptions.KeepUnbalancedDirectives)!;
+        }
+        File.WriteAllText(path, tree.ToFullString());
         removed += doomed.Count;
     }
 }
@@ -100,7 +119,7 @@ return 0;
 
 // The member's syntax, whitespace and comments normalised away, so formatting changes do not count as edits.
 static string Hash(MemberDeclarationSyntax member) =>
-    Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(member.NormalizeWhitespace().ToString())))[..16];
+    Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(member.NormalizeWhitespace().ToString().ReplaceLineEndings("\n"))))[..16];
 
 static string? Name(MemberDeclarationSyntax member) => member switch
 {
