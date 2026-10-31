@@ -5,7 +5,7 @@ expensive ones also run on demand with more cases.
 
 | Layer | What it proves | Where | CI |
 |---|---|---|---|
-| Upstream's suite and each change's tests | the library still does everything upstream tested, and every change does what its record says | `src/Parquet.Test` | every push and PR, net8.0 and net10.0, on the renamed `Lake.Parquet` build |
+| Upstream's suite and each change's tests | the library still does everything upstream tested, and every change does what its record says | `src/Parquet.Test` | every push and PR, net8.0 and net10.0: on the renamed `Lake.Parquet` build less the serializer's tests (`build`), and whole on the plain build (`suite`) |
 | Conformance, forward | files the library writes read back exactly and agree with parquet-cpp, statistics included | `eng/lake/Lake.Parquet.Conformance` | every push and PR (200 seeds), deep on demand |
 | Conformance, reverse | files parquet-cpp writes, with its own encodings and page layouts, read back exactly | the same project | the same |
 | Change verification | each change, alone on upstream, passes the suite, and its tests fail without its code | `lake-stack verify` | every `staging/*` push, one job per change |
@@ -130,5 +130,7 @@ allocations per run before reading those frames as copying.
 ## The suite on the renamed build
 
 `lake.yml` renames a copy of the source to the `Lake.Parquet` namespace and runs `src/Parquet.Test` against it,
-so the package that is published is the one that was tested. The conformance harness and change verification run
+so the package that is published is the one that was tested. That build leaves the reflection-based serializer out (README, "What Lake.Parquet
+leaves out"), and with it the tests that use it; the `suite` job runs every test on the plain build, so those
+files' tests of other code (encryption, the test-file corpus, legacy lists) keep running. The conformance harness and change verification run
 on the plain build: they test the library's behaviour, which the rename does not change.

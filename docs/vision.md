@@ -37,6 +37,11 @@ fork is where a fix can be made, measured and shipped, while it is offered upstr
   upstream has taken leaves the stack by itself at that point.
 - **Compatible with upstream by default.** Same API, same behaviour, same file format. A change that
   alters behaviour says so in its record, so a difference is a decision, never a surprise.
+- **Narrower than upstream in one place.** The package leaves out upstream's reflection-based
+  `ParquetSerializer` (and the Dremel compilers and CLR schema inference behind it): Parquet.SourceGenerator
+  maps classes to columns at compile time, and neither it nor Lake.NET calls the serializer. Its files stay
+  in the tree, untouched, so rebaselines never conflict on them; the Lake build only does not compile them.
+  Code that uses `ParquetSerializer` should stay on Parquet.Net.
 - **Built to be retired.** A change is written as if it were going upstream: minimal, in upstream's
   style, without fork-only abstractions. When upstream has it, or solves the same problem another
   way, the change is removed and so is its record, whoever raised it upstream.

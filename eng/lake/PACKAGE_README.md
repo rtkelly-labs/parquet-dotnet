@@ -12,14 +12,22 @@ If you do not need one of the
 
 ## Usage
 
-The API is Parquet.Net's. Change `Parquet` to `Lake.Parquet` in your `using` directives:
+The API is Parquet.Net's reader, writer and schema. Change `Parquet` to `Lake.Parquet` in your `using`
+directives:
 
 ```csharp
 using Lake.Parquet;
-using Lake.Parquet.Serialization;
+using Lake.Parquet.Schema;
 
-await ParquetSerializer.SerializeAsync(rows, stream);
+var id = new DataField<long>("id");
+await using ParquetWriter writer = await ParquetWriter.CreateAsync(new ParquetSchema(id), stream);
+using ParquetRowGroupWriter rowGroup = writer.CreateRowGroup();
+await rowGroup.WriteAsync<long>(id, ids);
 ```
+
+Lake.Parquet leaves out the reflection-based `ParquetSerializer`. To map classes to columns, use
+[Parquet.SourceGenerator](https://github.com/rtkelly-labs/Parquet.SourceGenerator), which does it at
+compile time; to keep using `ParquetSerializer`, stay on Parquet.Net.
 
 The assembly is `Lake.Parquet.dll`, so it can be referenced alongside Parquet.Net.
 

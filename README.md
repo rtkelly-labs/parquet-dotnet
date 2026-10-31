@@ -61,8 +61,10 @@ using Lake.Parquet;
 using Lake.Parquet.Serialization;
 ```
 
-The API is upstream's plus the recorded changes. Code written against Parquet.Net moves across by
-changing `Parquet` to `Lake.Parquet` in its `using` directives. The assembly is `Lake.Parquet.dll`, so
+The API is upstream's plus the recorded changes, minus the reflection-based serializer (below). Code
+written against Parquet.Net's reader, writer and schema moves across by changing `Parquet` to
+`Lake.Parquet` in its `using` directives. `Lake.Parquet.Serialization` keeps only the attribute types,
+which [Parquet.SourceGenerator](https://github.com/rtkelly-labs/Parquet.SourceGenerator) recognises. The assembly is `Lake.Parquet.dll`, so
 both packages can be referenced side by side, for example to compare them.
 
 Versions follow their own semver, starting at 0.1.0. Each release is a tag, `lake-v<version>`, and
@@ -121,11 +123,29 @@ make every upstream rebase conflict across hundreds of files. The rename happens
    text, and fails if any survive.
 2. [`eng/lake/Lake.Parquet.targets`](eng/lake/Lake.Parquet.targets) is injected into the build
    through MSBuild's `CustomBefore…` hooks. It sets the assembly name, package id, version and
-   metadata, and the package README, without editing upstream's project file.
+   metadata, and the package README, and leaves the serializer out (below), without editing
+   upstream's project file.
 3. [`eng/lake/VerifyLakeAssembly.cs`](eng/lake/VerifyLakeAssembly.cs) reads the built assemblies'
-   metadata and fails if any namespace is not under `Lake.Parquet`.
-4. Upstream's own test suite, with every change's tests, runs against the renamed build, and then the
-   package is packed and its contents checked.
+   metadata and fails if any namespace is not under `Lake.Parquet`, if any serializer type is in
+   them, or if a serialization attribute is missing.
+4. Upstream's own test suite, with every change's tests, runs against the renamed build (less the
+   serializer's tests), and then the package is packed and its contents checked. The `suite` job runs
+   the whole suite, serializer included, on the plain build.
+
+### What Lake.Parquet leaves out
+
+Upstream's `ParquetSerializer` maps classes to columns at run time with reflection and compiled
+expression trees: `Serialization/ParquetSerializer.cs`, `Serialization/ParquetClrSchemaExtensions.cs`,
+`Serialization/Dremel/` and `Extensions/ExpressionExtensions.cs`, about 2,600 lines. Parquet.SourceGenerator
+does the same at compile time, and neither it nor Lake.NET calls the serializer, so the Lake build does
+not compile those files. They stay in the tree as upstream wrote them, so a rebaseline never conflicts
+on them. [`eng/lake/Strip/`](eng/lake/Strip/) holds the one method the rest of the library used from
+them. The attribute types in `Serialization/Attributes/` stay.
+
+With the serializer gone, the trimming and AOT analyzers (`-p:IsAotCompatible=true`) report 14
+findings in five files, where they reported 76: the untyped `ReadRawColumnDataBaseAsync` and its writer
+counterpart, `FileMerger`, `MapField`, and the CLR type helpers in `Extensions/ParquetClrSchemaExtensions.cs`.
+`-p:LakeKeepSerializer=true` builds the package with the serializer, to compare.
 
 Upstream's `build.yml` stays as upstream wrote it. `lake-ci` is the fork's own required check.
 

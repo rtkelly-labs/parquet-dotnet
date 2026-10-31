@@ -34,4 +34,29 @@
         <!-- MIT asks for the copyright notice in every copy; upstream's package only carries the expression. -->
         <None Include="$(MSBuildThisFileDirectory)..\..\LICENSE" Pack="true" PackagePath="\" />
     </ItemGroup>
+
+    <!--
+      The reflection-based serializer is left out of Lake.Parquet (README, "What Lake.Parquet leaves out"): the
+      ParquetSerializer, its Dremel striper and assembler compilers and the CLR schema inference they use. Upstream's
+      files stay as they are, so rebaselines never conflict on them; they are only not compiled. The attribute types
+      in Parquet.Serialization.Attributes stay: Parquet.SourceGenerator recognises them by name. Strip/ holds the one
+      method the rest of the library used from those files.
+    -->
+    <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Parquet' and '$(LakeKeepSerializer)' != 'true'">
+        <!-- ParquetOptions' docs link to ParquetSerializer for its serializer-only options -->
+        <NoWarn>$(NoWarn);CS1574</NoWarn>
+    </PropertyGroup>
+    <ItemGroup Condition="'$(MSBuildProjectName)' == 'Parquet' and '$(LakeKeepSerializer)' != 'true'">
+        <Compile Remove="Serialization\ParquetSerializer.cs;Serialization\ParquetClrSchemaExtensions.cs;Serialization\Dremel\**;Extensions\ExpressionExtensions.cs" />
+        <Compile Include="$(MSBuildThisFileDirectory)Strip\*.cs" />
+    </ItemGroup>
+
+    <!--
+      The renamed test run leaves out the tests that use the serializer. The plain build's run (the suite job in
+      lake.yml) still has every one of them, so tests that also cover other code (encryption, the test-file corpus,
+      legacy lists) keep running against the fork.
+    -->
+    <ItemGroup Condition="'$(MSBuildProjectName)' == 'Parquet.Test' and '$(LakeKeepSerializer)' != 'true'">
+        <Compile Remove="Serialisation\**;Integration\ParquetSerializerTest.cs;Extensions\ParquetClrSchemaExtensionsTest.cs;EncryptionTest.cs;ParquetReaderOnTestFilesTest.cs;Reader\ParquetCsvComparison.cs;Reader\TestDataTest.cs;Schema\LegacyListTest.cs" />
+    </ItemGroup>
 </Project>
