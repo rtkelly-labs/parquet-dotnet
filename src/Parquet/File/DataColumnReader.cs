@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Buffers;
+using System.Buffers.Binary;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.HighPerformance.Buffers;
@@ -305,6 +307,13 @@ class DataColumnReader {
                 }
                 break;
 
+            case Encoding.DELTA_BINARY_PACKED when !DeltaBinaryPackedEncoder.IsSupported(typeof(T)):
+            case Encoding.BYTE_STREAM_SPLIT when !ByteStreamSplitEncoder.IsSupported(typeof(T)):
+            case Encoding.DELTA_LENGTH_BYTE_ARRAY or Encoding.DELTA_BYTE_ARRAY
+                when typeof(T) != typeof(ReadOnlyMemory<byte>) && typeof(T) != typeof(ReadOnlyMemory<char>):
+                ReadThroughPlain(src, encoding, totalValuesInPage, rc);
+                break;
+
             case Encoding.DELTA_BINARY_PACKED: {// 5
                     int read = DeltaBinaryPackedEncoder.Decode(src, rc.ValuesToReadInto, totalValuesInPage, out _);
                     rc.MarkValuesRead(read);
@@ -331,6 +340,73 @@ class DataColumnReader {
             case Encoding.BIT_PACKED:                // 4 (deprecated)
             default:
                 throw new ParquetException($"encoding {encoding} is not supported.");
+        }
+    }
+
+    /// <summary>
+    /// Columns whose CLR type is not the physical type (timestamps, dates, decimals, int8/uint8, UUID, fixed
+    /// bytes) under an encoding whose decoder only produces physical values: decodes the physical values,
+    /// lays them out as PLAIN, and lets the PLAIN decoder convert them as it does for PLAIN pages. Other
+    /// writers (parquet-mr's v2 writer, Arrow) use these encodings for such columns.
+    /// </summary>
+    private void ReadThroughPlain<T>(Span<byte> src, Encoding encoding, int count, ReadingColumn<T> rc) where T : struct {
+        byte[] plain = TranscodeToPlain(src, encoding, count);
+        ParquetPlainEncoder.Decode(rc.ValuesToReadInto, count, _schemaElement!, plain, out int read);
+        rc.MarkValuesRead(read);
+    }
+
+    private byte[] TranscodeToPlain(Span<byte> src, Encoding encoding, int count) {
+        switch(_schemaElement!.Type) {
+            case Meta.Type.INT32: {
+                    int[] values = new int[count];
+                    if(encoding == Encoding.DELTA_BINARY_PACKED) {
+                        DeltaBinaryPackedEncoder.Decode<int>(src, values, count, out _);
+                    } else {
+                        ByteStreamSplitEncoder.Decode<int>(src, values);
+                    }
+                    return MemoryMarshal.AsBytes(values.AsSpan()).ToArray();
+                }
+            case Meta.Type.INT64: {
+                    long[] values = new long[count];
+                    if(encoding == Encoding.DELTA_BINARY_PACKED) {
+                        DeltaBinaryPackedEncoder.Decode<long>(src, values, count, out _);
+                    } else {
+                        ByteStreamSplitEncoder.Decode<long>(src, values);
+                    }
+                    return MemoryMarshal.AsBytes(values.AsSpan()).ToArray();
+                }
+            case Meta.Type.FIXED_LEN_BYTE_ARRAY when encoding == Encoding.BYTE_STREAM_SPLIT: {
+                    // stream j holds byte j of every value
+                    int k = _schemaElement.TypeLength ?? throw new ParquetException($"{_dataField.Path} has no type length");
+                    byte[] plain = new byte[count * k];
+                    for(int i = 0; i < count; i++) {
+                        for(int j = 0; j < k; j++) {
+                            plain[(i * k) + j] = src[(j * count) + i];
+                        }
+                    }
+                    return plain;
+                }
+            case Meta.Type.FIXED_LEN_BYTE_ARRAY or Meta.Type.BYTE_ARRAY
+                when encoding is Encoding.DELTA_BYTE_ARRAY or Encoding.DELTA_LENGTH_BYTE_ARRAY: {
+                    var values = new ReadOnlyMemory<byte>[count];
+                    int read = encoding == Encoding.DELTA_BYTE_ARRAY
+                        ? DeltaByteArrayEncoder.Decode<ReadOnlyMemory<byte>>(src, values, count)
+                        : DeltaLengthByteArrayEncoder.Decode<ReadOnlyMemory<byte>>(src, values, count);
+                    // PLAIN: fixed-length values back to back; variable-length ones each after a 4-byte length
+                    bool fixedLength = _schemaElement.Type == Meta.Type.FIXED_LEN_BYTE_ARRAY;
+                    using var plain = new MemoryStream();
+                    Span<byte> length = stackalloc byte[sizeof(int)];
+                    for(int i = 0; i < read; i++) {
+                        if(!fixedLength) {
+                            BinaryPrimitives.WriteInt32LittleEndian(length, values[i].Length);
+                            plain.Write(length);
+                        }
+                        plain.Write(values[i].Span);
+                    }
+                    return plain.ToArray();
+                }
+            default:
+                throw new ParquetException($"encoding {encoding} is not supported for {_schemaElement.Type} column {_dataField.Path} ({_dataField.ClrType})");
         }
     }
 
