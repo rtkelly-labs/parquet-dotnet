@@ -47,7 +47,7 @@
         <NoWarn>$(NoWarn);CS1574</NoWarn>
     </PropertyGroup>
     <ItemGroup Condition="'$(MSBuildProjectName)' == 'Parquet' and '$(LakeKeepSerializer)' != 'true'">
-        <Compile Remove="Serialization\ParquetSerializer.cs;Serialization\ParquetClrSchemaExtensions.cs;Serialization\Dremel\**;Extensions\ExpressionExtensions.cs" />
+        <Compile Remove="Serialization\ParquetSerializer.cs;Serialization\ParquetClrSchemaExtensions.cs;Serialization\Dremel\**;Extensions\ExpressionExtensions.cs;Utils\FileMerger.cs" />
         <Compile Include="$(MSBuildThisFileDirectory)Strip\*.cs" />
     </ItemGroup>
 
@@ -57,6 +57,6 @@
       legacy lists) keep running against the fork.
     -->
     <ItemGroup Condition="'$(MSBuildProjectName)' == 'Parquet.Test' and '$(LakeKeepSerializer)' != 'true'">
-        <Compile Remove="Serialisation\**;Integration\ParquetSerializerTest.cs;Extensions\ParquetClrSchemaExtensionsTest.cs;EncryptionTest.cs;ParquetReaderOnTestFilesTest.cs;Reader\ParquetCsvComparison.cs;Reader\TestDataTest.cs;Schema\LegacyListTest.cs" />
+        <Compile Remove="Serialisation\**;Integration\ParquetSerializerTest.cs;Extensions\ParquetClrSchemaExtensionsTest.cs;EncryptionTest.cs;ParquetReaderOnTestFilesTest.cs;Reader\ParquetCsvComparison.cs;Reader\TestDataTest.cs;Schema\LegacyListTest.cs;Utils\FIleMergerTest.cs" />
     </ItemGroup>
 </Project>

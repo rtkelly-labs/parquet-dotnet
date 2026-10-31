@@ -138,13 +138,21 @@ Upstream's `ParquetSerializer` maps classes to columns at run time with reflecti
 expression trees: `Serialization/ParquetSerializer.cs`, `Serialization/ParquetClrSchemaExtensions.cs`,
 `Serialization/Dremel/` and `Extensions/ExpressionExtensions.cs`, about 2,600 lines. Parquet.SourceGenerator
 does the same at compile time, and neither it nor Lake.NET calls the serializer, so the Lake build does
-not compile those files. They stay in the tree as upstream wrote them, so a rebaseline never conflicts
-on them. [`eng/lake/Strip/`](eng/lake/Strip/) holds the one method the rest of the library used from
-them. The attribute types in `Serialization/Attributes/` stay.
+not compile those files, nor `Utils/FileMerger.cs`, which only they and its own test used. They stay in
+the tree as upstream wrote them, so a rebaseline never conflicts on them. [`eng/lake/Strip/`](eng/lake/Strip/)
+holds the one method the rest of the library used from them. The attribute types in
+`Serialization/Attributes/` stay.
 
-With the serializer gone, the trimming and AOT analyzers (`-p:IsAotCompatible=true`) report 14
-findings in five files, where they reported 76: the untyped `ReadRawColumnDataBaseAsync` and its writer
-counterpart, `FileMerger`, `MapField`, and the CLR type helpers in `Extensions/ParquetClrSchemaExtensions.cs`.
+Members that only that code used are left out too, by [`eng/lake/StripMembers.cs`](eng/lake/StripMembers.cs)
+on the CI copy before the rename: the untyped `ReadRawColumnDataBaseAsync` and the writer's
+`RawColumnData` overloads, `MapField.CreateSimpleDictionary`, and five CLR type helpers. Each is named in
+[`eng/lake/strip-members.json`](eng/lake/strip-members.json) with a hash of its syntax, so when upstream
+edits, renames or removes one the build fails and says which, rather than removing something new
+unseen (`dotnet run eng/lake/StripMembers.cs -- . eng/lake/strip-members.json --hashes` prints the
+current hashes).
+
+With those gone, the trimming and AOT analyzers (`-p:IsAotCompatible=true`) report 3 findings, where
+they reported 76: the CLR type helpers `DataField` uses when it is built from a type.
 `-p:LakeKeepSerializer=true` builds the package with the serializer, to compare.
 
 Upstream's `build.yml` stays as upstream wrote it. `lake-ci` is the fork's own required check.

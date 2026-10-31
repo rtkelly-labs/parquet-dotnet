@@ -139,6 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           rsync -a --exclude .git ./ "$RUNNER_TEMP/lake/"
+          dotnet run eng/lake/StripMembers.cs -- "$RUNNER_TEMP/lake" eng/lake/strip-members.json
           dotnet run eng/lake/RenameNamespace.cs -- "$RUNNER_TEMP/lake/src" Parquet Lake.Parquet
 
       # Both hooks: CustomBefore...Targets renames the assembly in each target framework's build,
