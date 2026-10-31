@@ -372,8 +372,14 @@ public class ParquetRowGroupReader : IDisposable {
 
         object? min = null, max = null;
         if(minBytes != null && maxBytes != null) {
-            ParquetPlainEncoder.TryDecode(minBytes, se, _options, out min);
-            ParquetPlainEncoder.TryDecode(maxBytes, se, _options, out max);
+            try {
+                ParquetPlainEncoder.TryDecode(minBytes, se, _options, out min);
+                ParquetPlainEncoder.TryDecode(maxBytes, se, _options, out max);
+            } catch(ArgumentException) {
+                // statistics are optional: bytes that do not decode as the column's type leave min and max unknown
+                // (MinBytes and MaxBytes keep them), rather than failing the column's read
+                min = max = null;
+            }
         }
 
         return new DataColumnStatistics(st.NullCount, st.DistinctCount, min, max) {

@@ -107,7 +107,7 @@ class DataColumnReader {
                     await ReadDataPageV2Async(ph, rc, totalValuesInChunk, cancellationToken);
                     break;
                 default:
-                    throw new NotSupportedException($"can't read page type {ph.Type}");
+                    throw new ParquetException($"column '{_dataField.Path}': can't read page type {ph.Type}");
             }
             if(ph.Type != PageType.DICTIONARY_PAGE)
                 _dataPageOrdinal++;
@@ -132,7 +132,10 @@ class DataColumnReader {
     private async ValueTask ReadDictionaryPageAsync<T>(PageHeader ph, ReadingColumn<T> rc, CancellationToken cancellationToken) where T : struct {
 
         if(rc.HasDictionary)
-            throw new InvalidOperationException("dictionary already read");
+            throw new ParquetException($"column '{_dataField.Path}' has a second dictionary page, file is corrupt");
+
+        if(ph.DictionaryPageHeader == null)
+            throw new ParquetException($"column '{_dataField.Path}' is missing dictionary page header, file is corrupt");
 
         //Dictionary page format: the entries in the dictionary - in dictionary order - using the plain encoding.
         using IMemoryOwner<byte> bytes = await ReadPageDataAsync(ph);
