@@ -45,7 +45,7 @@ public class BranchesTests {
         (int code, _, string error) = repo.Tool("branches");
 
         Assert.Equal(1, code);
-        Assert.Contains("lake/change/0003-on-a: lake(0003) does not apply", error);
+        Assert.Contains("lake/change/0003-on-a: 'lake(0003): Builds on A' does not apply", error);
         Assert.NotNull(repo.Fork.TryResolve("lake/change/0002-fix-a"));
         Assert.Single(repo.Fork.Lines("worktree", "list"));
     }
@@ -66,5 +66,21 @@ public class BranchesTests {
         Assert.Null(repo.Fork.TryResolve("refs/heads/lake/change/0003-fix-b"));
         Assert.Null(repo.Origin.TryResolve("refs/heads/lake/change/0003-fix-b"));
         Assert.NotNull(repo.Origin.TryResolve("refs/heads/lake/change/0002-fix-a"));
+    }
+
+    [Fact]
+    public void A_pending_fixup_is_in_its_changes_branch() {
+        using var repo = new TestRepo();
+        repo.AddChange("0002", "fix-a", "Fix A", files: ("src/A.cs", TestRepo.Lines("a", 20, (3, "fixed"))));
+        repo.AddChange("0003", "fix-b", "Fix B", files: ("src/B.cs", TestRepo.Lines("b", 20, (3, "fixed"))));
+        TestRepo.Commit(repo.Fork, "fixup! lake(0002): Fix A", ("src/A.cs", TestRepo.Lines("a", 20, (3, "fixed better"))));
+        TestRepo.Commit(repo.Fork, "fixup! lake(0002): Fix A", ("docs/changes/0002-fix-a.md", TestRepo.Record("Fix A", status: "proposed-upstream")));
+
+        BranchesResult result = BranchesCommand.Build(repo.Context(), "HEAD", null);
+
+        Assert.Empty(result.Failed);
+        Assert.Contains("fixed better", repo.Fork.Run("show", "lake/change/0002-fix-a:src/A.cs"));
+        Assert.Equal(["fixup! lake(0002): Fix A", "lake(0002): Fix A"], repo.Fork.Lines("log", "--format=%s", "upstream/master..lake/change/0002-fix-a"));
+        Assert.Single(repo.Fork.Lines("log", "--format=%s", "upstream/master..lake/change/0003-fix-b"));
     }
 }

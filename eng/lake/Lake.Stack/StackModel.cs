@@ -67,7 +67,10 @@ public sealed class StackModel {
         return -1;
     }
 
-    /// <summary>A change and everything its depends_on needs, transitively, in stack order.</summary>
+    /// <summary>
+    /// A change and everything its depends_on needs, transitively, in stack order, with their pending fixups,
+    /// so a change branch (and its verification) has a fix before the next rebaseline folds it in.
+    /// </summary>
     public IReadOnlyList<StackCommit> WithDependencies(string number) {
         var wanted = new HashSet<string> { number };
         var todo = new Queue<string>([number]);
@@ -81,7 +84,7 @@ public sealed class StackModel {
                 }
             }
         }
-        return Commits.Where(c => c.Number != null && wanted.Contains(c.Number)).ToList();
+        return Commits.Where(c => (c.Number is string n && wanted.Contains(n)) || (c.FixupOf is string f && wanted.Contains(f))).ToList();
     }
 
     public static StackModel Load(Git git, string head, string upstream) {

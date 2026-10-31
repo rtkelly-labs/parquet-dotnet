@@ -68,7 +68,7 @@ public static class VerifyCommand {
             IReadOnlyList<StackCommit> commits = model.WithDependencies(number);
             StackCommit? blocking = commits.FirstOrDefault(c => !BranchesCommand.Replay(tree, c));
             if(blocking != null) {
-                return new VerifyResult(number, VerifyOutcome.DoesNotApply, $"lake({blocking.Number}) does not apply on upstream with its depends_on");
+                return new VerifyResult(number, VerifyOutcome.DoesNotApply, $"'{blocking.Subject}' does not apply on upstream with its depends_on");
             }
             if(runTests(path) != 0) {
                 return new VerifyResult(number, VerifyOutcome.Fails, "the suite fails on its own branch");

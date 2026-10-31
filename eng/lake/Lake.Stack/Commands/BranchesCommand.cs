@@ -41,7 +41,7 @@ public static class BranchesCommand {
                 StackCommit? blocking = commits.FirstOrDefault(c => !Replay(tree, c));
                 if(blocking != null) {
                     string needs = string.Join(", ", commits.Select(c => c.Number));
-                    context.Error.WriteLine($"{record.BranchName}: lake({blocking.Number}) does not apply on {ontoSha[..10]} with [{needs}]: it needs another change in depends_on, or it conflicts with upstream (sync first)");
+                    context.Error.WriteLine($"{record.BranchName}: '{blocking.Subject}' does not apply on {ontoSha[..10]} with [{needs}]: it needs another change in depends_on, or it conflicts with upstream (sync first)");
                     failed.Add(record.BranchName);
                     continue;
                 }
@@ -69,6 +69,9 @@ public static class BranchesCommand {
 
     /// <summary>Applies one stack commit without its record, keeping its message, author and committer.</summary>
     internal static bool Replay(Git tree, StackCommit commit) {
+        if(commit.OnlyRecords) {
+            return true;   // a change branch carries no records: nothing to apply
+        }
         if(tree.TryRun("cherry-pick", "--no-commit", commit.Sha).ExitCode != 0) {
             tree.TryRun("cherry-pick", "--abort");
             tree.TryRun("reset", "--quiet", "--hard");
