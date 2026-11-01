@@ -193,8 +193,8 @@ public class EndToEndTypeTest : TestBase {
     [Fact]
     public async Task Type_int64_decimal_writes_and_reads() {
         var field = new DecimalDataField("decInt64", 17, 12);
-        decimal actual = await WriteReadSingleAsync(field, 1234567.88m);
-        Assert.Equal(1234567.88m, actual);
+        decimal actual = await WriteReadSingleAsync(field, 12345.88m);   // five integer digits: decimal(17,12) holds no more
+        Assert.Equal(12345.88m, actual);
     }
 
     [Fact]

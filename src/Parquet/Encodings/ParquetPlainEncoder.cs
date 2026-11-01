@@ -507,6 +507,7 @@ static class ParquetPlainEncoder {
     }
 
     private static bool TryEncode(decimal value, SchemaElement tse, out byte[] result) {
+        CheckFits(value, tse);
         try {
             switch(tse.Type) {
                 case TType.INT32:
@@ -852,6 +853,26 @@ static class ParquetPlainEncoder {
         }
     }
 
+    /// <summary>
+    /// A decimal is written only if its integer part fits the column's DECIMAL(precision, scale), precision - scale
+    /// digits: a wider value would make a file that breaks its own schema. Digits beyond the scale are truncated, as
+    /// upstream does.
+    /// </summary>
+    private static void CheckFits(decimal value, SchemaElement tse) {
+        int scale = tse.Scale ?? 0;
+        int precision = tse.Precision ?? 38;
+        int integerDigits = precision - scale;
+        if(integerDigits < 29 && Math.Abs(decimal.Truncate(value)) >= PowerOfTen(integerDigits))
+            throw TooLarge(value, tse);
+    }
+
+    private static decimal PowerOfTen(int n) {
+        decimal p = 1m;
+        for(int i = 0; i < n; i++)
+            p *= 10m;
+        return p;
+    }
+
     private static ParquetException TooLarge(decimal value, SchemaElement tse) =>
         new ParquetException($"value '{value}' is too large to fit into scale {tse.Scale} and precision {tse.Precision}");
 
@@ -861,6 +882,7 @@ static class ParquetPlainEncoder {
                     int scale = tse.Scale ?? 0;
                     using var w = new ValueWriter(destination);
                     foreach(decimal d in data) {
+                        CheckFits(d, tse);
                         long unscaled = ToUnscaled(d, scale, tse);
                         if(unscaled < int.MinValue || unscaled > int.MaxValue)
                             throw TooLarge(d, tse);
@@ -871,13 +893,16 @@ static class ParquetPlainEncoder {
             case TType.INT64: {
                     int scale = tse.Scale ?? 0;
                     using var w = new ValueWriter(destination);
-                    foreach(decimal d in data)
+                    foreach(decimal d in data) {
+                        CheckFits(d, tse);
                         w.Write(ToUnscaled(d, scale, tse));
+                    }
                 }
                 break;
             case TType.FIXED_LEN_BYTE_ARRAY:
                 Span<byte> decBuf = stackalloc byte[16];
                 foreach(decimal d in data) {
+                    CheckFits(d, tse);
                     var bd = BigDecimal.FromDecimal(d, tse.Precision, tse.Scale);
                     int written = bd.WriteBytes(decBuf);
                     tse.TypeLength = written;
