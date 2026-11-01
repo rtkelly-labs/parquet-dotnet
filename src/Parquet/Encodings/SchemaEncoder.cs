@@ -325,6 +325,10 @@ static class SchemaEncoder {
         if(se.Type == null)
             return false;
 
+        // before the annotations, which would otherwise give an undefined type a CLR type
+        if(!Enum.IsDefined(se.Type.Value))
+            throw new ParquetException($"unknown physical type {se.Type}, file is corrupt");
+
         SType? systemType = GetSystemType(se, options);
         if(systemType == null)
             throw new NotSupportedException($"unsupported type {se.Type}");

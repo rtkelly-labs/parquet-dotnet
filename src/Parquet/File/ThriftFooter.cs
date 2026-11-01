@@ -215,9 +215,14 @@ class ThriftFooter {
         SchemaElement tse = _fileMeta.Schema[si++];
         var container = new List<Field>();
 
-        CreateModelSchema(null, container, tse.NumChildren ?? 0, ref si, formatOptions);
+        // the schema's own checks (a decimal's scale and precision, at least one field) reject what the file says
+        try {
+            CreateModelSchema(null, container, tse.NumChildren ?? 0, ref si, formatOptions);
 
-        return new ParquetSchema(container);
+            return new ParquetSchema(container);
+        } catch(ArgumentException e) {
+            throw new ParquetException($"the file's schema is invalid: {e.Message}", e);
+        }
     }
 
     private void CreateModelSchema(FieldPath? path, IList<Field> container, int childCount, ref int si, ParquetOptions formatOptions) {
@@ -299,6 +304,8 @@ class ThriftFooter {
         }
 
         public ThriftSchemaTree(List<SchemaElement> schema) {
+            if(schema.Count == 0)
+                throw new ParquetException("the file's schema is empty, file is corrupt");
             root = new Node { element = schema[0] };
             int i = 1;
 
@@ -355,6 +362,8 @@ class ThriftFooter {
         private void BuildSchema(Node parent, List<SchemaElement> schema, int count, ref int i) {
             parent.children = new List<Node>();
             for(int ic = 0; ic < count; ic++) {
+                if(i >= schema.Count)
+                    throw new ParquetException($"schema element '{parent.element?.Name}' has more children than the schema has elements, file is corrupt");
                 SchemaElement child = schema[i++];
                 var node = new Node { element = child, parent = parent };
                 parent.children.Add(node);
