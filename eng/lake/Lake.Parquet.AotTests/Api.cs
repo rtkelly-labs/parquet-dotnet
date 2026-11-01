@@ -61,6 +61,7 @@ static class Api {
         await DecimalExactOrRefusedAsync();
         await WriteRangesAsync();
         await UnknownFooterFieldsAsync();
+        await RareLayoutsAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -969,6 +970,58 @@ static class Api {
                 "footer with unknown fields of every type: values");
         } catch(Exception e) {
             Check(false, $"footer with unknown fields of every type: {e.GetType().Name}: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Layouts the generator does not produce: a DECIMAL on BYTE_ARRAY (written by HVR, upstream's fixture), read as
+    /// decimal and as BigDecimal; chunks of nulls only, whose statistics have no bounds (lake(0069)), for integer, decimal, binary,
+    /// BigDecimal and INTERVAL columns; and decimal columns longer than the encoder's buffer.
+    /// </summary>
+    static async Task RareLayoutsAsync() {
+        byte[] hvr = Resource("byte_array_decimal.parquet");
+        decimal[] expected = Enumerable.Range(1, 24).Select(i => (decimal)i).ToArray();
+        await using(ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(hvr))) {
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            Check(SequenceEqual(await ReadNullableAsync<decimal>(rowGroup, reader.Schema.GetDataFields()[0], 24), expected.Select(d => (decimal?)d)), "DECIMAL(4,2) on BYTE_ARRAY as decimal");
+        }
+        await using(ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(hvr), new ParquetOptions { UseBigDecimal = true })) {
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            BigDecimal?[] read = await ReadNullableAsync<BigDecimal>(rowGroup, reader.Schema.GetDataFields()[0], 24);
+            Check(read.Select(b => b!.Value.UnscaledValue).SequenceEqual(expected.Select(d => new System.Numerics.BigInteger(d * 100))), "DECIMAL(4,2) on BYTE_ARRAY as BigDecimal");
+        }
+
+        await NullsOnlyAsync<int>(new DataField<int?>("i32"));
+        await NullsOnlyAsync<uint>(new DataField<uint?>("u32"));
+        await NullsOnlyAsync<decimal>(new DecimalDataField("d18", 18, 2, isNullable: true));
+        await NullsOnlyAsync<ulong>(new DataField<ulong?>("u64"));
+        await NullsOnlyAsync<BigDecimal>(new BigDecimalDataField("big", 38, 4, isNullable: true), new ParquetOptions { UseBigDecimal = true });
+        await NullsOnlyAsync<Interval>(new DataField<Interval?>("interval"));
+        var bin = new DataField<byte[]>("bin");
+        byte[] binFile = await WriteAsync(new ParquetSchema(bin), new ParquetOptions(), rg => rg.WriteAsync(bin, new byte[]?[] { null, null }));
+        await using(ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(binFile))) {
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            DataColumnStatistics? stats = rowGroup.GetStatistics(reader.Schema.GetDataFields()[0]);
+            Check(stats is { NullCount: 2, MinValue: null, MaxValue: null }, "byte[] of nulls only: statistics without bounds");
+        }
+
+        foreach(int precision in new[] { 9, 18 }) {
+            var field = new DecimalDataField("d", precision, 2);
+            decimal[] many = Enumerable.Range(0, 100_000).Select(i => (i - 50_000) * 1.25m).ToArray();
+            byte[] file = await WriteAsync(new ParquetSchema(field), new ParquetOptions { CompressionMethod = CompressionMethod.None }, rg => rg.WriteAsync<decimal>(field, many));
+            await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            Check(SequenceEqual(await ReadAsync<decimal>(rowGroup, reader.Schema.GetDataFields()[0], many.Length), many), $"decimal({precision},2), 100,000 values");
+        }
+
+        static async Task NullsOnlyAsync<T>(DataField field, ParquetOptions? readOptions = null) where T : struct {
+            byte[] file = await WriteAsync(new ParquetSchema(field), new ParquetOptions(), rg => rg.WriteAsync<T>(field, new T?[] { null, null, null }));
+            await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file), readOptions);
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            DataField read = reader.Schema.GetDataFields()[0];
+            DataColumnStatistics? stats = rowGroup.GetStatistics(read);
+            Check(stats is { NullCount: 3, MinValue: null, MaxValue: null } && (await ReadNullableAsync<T>(rowGroup, read, 3)).All(v => v == null),
+                $"{typeof(T).Name} of nulls only: values and statistics without bounds");
         }
     }
 
