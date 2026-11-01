@@ -133,6 +133,11 @@ public class ParquetRowGroupReader : IDisposable {
 
         using var rc = new ReadingColumn<T>(field, values, definitionLevels, repetitionLevels);
         await columnReader.ReadAsync(rc, cancellationToken);
+        if(typeof(T) == typeof(DateTime) && _footer.GetSchemaElement(columnChunk) is { } wallSe && File.DataColumnWriter.IsWallClock(wallSe, _options)) {
+            Span<DateTime> read = values.Span.AsSpan<T, DateTime>();
+            for(int i = 0; i < read.Length; i++)
+                read[i] = DateTime.SpecifyKind(read[i], DateTimeKind.Unspecified);
+        }
     }
 
     /// <summary>

@@ -6,14 +6,15 @@ using Xunit;
 namespace Parquet.Test.Types;
 
 /// <summary>
-/// A decimal is written only if its integer part fits its column's DECIMAL(precision, scale): a wider value would make
-/// a file that breaks its own schema. Digits beyond the scale are truncated, as upstream does.
+/// A decimal is written only if its column's DECIMAL(precision, scale) holds it exactly: a wider value would make a file
+/// that breaks its own schema (lake(0065)), and digits beyond the scale are refused unless
+/// ParquetOptions.RoundDecimalsToScale asks for upstream's truncation (lake(0072)).
 /// </summary>
 public class DecimalWriteFitTest {
 
-    static async Task<decimal> RoundTripAsync(DecimalDataField field, decimal value) {
+    static async Task<decimal> RoundTripAsync(DecimalDataField field, decimal value, ParquetOptions? options = null) {
         using var ms = new MemoryStream();
-        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms)) {
+        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(new ParquetSchema(field), ms, options)) {
             using ParquetRowGroupWriter rg = writer.CreateRowGroup();
             await rg.WriteAsync<decimal>(field, new[] { value });
         }
@@ -37,11 +38,23 @@ public class DecimalWriteFitTest {
     }
 
     [Theory]
-    [InlineData(9, 2, "1.239", "1.23")]   // upstream truncates digits beyond the scale, and tests it; unchanged
-    [InlineData(20, 2, "-1.239", "-1.23")]
-    public async Task Digits_beyond_the_scale_are_truncated_as_upstream(int precision, int scale, string value, string expected) {
+    [InlineData(9, 2, "1.239")]       // truncated to 1.23 before lake(0072)
+    [InlineData(12, 2, "-0.001")]
+    [InlineData(20, 2, "1.239")]
+    [InlineData(38, 0, "0.5")]
+    public async Task Digits_beyond_the_scale_are_refused(int precision, int scale, string value) {
         decimal d = decimal.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
-        Assert.Equal(decimal.Parse(expected, System.Globalization.CultureInfo.InvariantCulture), await RoundTripAsync(new DecimalDataField("d", precision, scale), d));
+        ParquetException e = await Assert.ThrowsAsync<ParquetException>(() => RoundTripAsync(new DecimalDataField("d", precision, scale), d));
+        Assert.Contains(nameof(ParquetOptions.RoundDecimalsToScale), e.Message);
+    }
+
+    [Theory]
+    [InlineData(9, 2, "1.239", "1.23")]   // upstream's truncation, asked for
+    [InlineData(20, 2, "-1.239", "-1.23")]
+    public async Task Digits_beyond_the_scale_are_truncated_when_asked(int precision, int scale, string value, string expected) {
+        decimal d = decimal.Parse(value, System.Globalization.CultureInfo.InvariantCulture);
+        Assert.Equal(decimal.Parse(expected, System.Globalization.CultureInfo.InvariantCulture),
+            await RoundTripAsync(new DecimalDataField("d", precision, scale), d, new ParquetOptions { RoundDecimalsToScale = true }));
     }
 
     [Theory]
