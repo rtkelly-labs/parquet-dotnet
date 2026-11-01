@@ -13,7 +13,8 @@
 //
 // An entry with a "branch" leaves the member in and removes one branch of it: an if statement whose condition is that
 // text (an else-if is spliced out of its chain; a leading if gives way to its else), or the switch section whose labels
-// are that text ("case 0:"). The hash is still the whole member's, so a change anywhere in it stops the run.
+// are that text ("case 0:"); "else:<condition>" removes only the else clause of the if with that condition. The hash is
+// still the whole member's, so a change anywhere in it stops the run.
 
 using System.Security.Cryptography;
 using System.Text;
@@ -152,6 +153,14 @@ return 0;
 // The if statements whose condition, and the switch sections whose labels, are the branch text, whitespace normalised.
 static IEnumerable<SyntaxNode> Branches(MemberDeclarationSyntax member, string branch)
 {
+    if (branch.StartsWith("else:", StringComparison.Ordinal))
+    {
+        string condition = SyntaxFactory.ParseExpression(branch["else:".Length..]).NormalizeWhitespace().ToString();
+        foreach (IfStatementSyntax ifs in member.DescendantNodes().OfType<IfStatementSyntax>())
+            if (ifs.Else != null && ifs.Condition.NormalizeWhitespace().ToString() == condition)
+                yield return ifs.Else;
+        yield break;
+    }
     string want = SyntaxFactory.ParseExpression(branch).NormalizeWhitespace().ToString();
     foreach (SyntaxNode node in member.DescendantNodes())
     {
@@ -169,6 +178,8 @@ static SyntaxNode RemoveBranch(SyntaxNode tree, SyntaxNode branch)
 {
     switch (branch)
     {
+        case ElseClauseSyntax elseClause when elseClause.Parent is IfStatementSyntax owner:
+            return tree.ReplaceNode(owner, owner.WithElse(null));
         case SwitchSectionSyntax:
             return tree.RemoveNode(branch, SyntaxRemoveOptions.KeepNoTrivia)!;
         case IfStatementSyntax ifs when ifs.Parent is ElseClauseSyntax elseClause && elseClause.Parent is IfStatementSyntax previous:
