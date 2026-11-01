@@ -70,12 +70,25 @@ public struct BigDecimal {
 
     internal static decimal ToSystemDecimal(byte[] data, SchemaElement tse) {
         data = Enumerable.Reverse(data).ToArray();
-        BigInteger scaleMultiplier = BigInteger.Pow(10, tse.Scale ?? 0);
         var unscaled = new BigInteger(data);
-        decimal ipScaled = (decimal)BigInteger.DivRem(unscaled, scaleMultiplier, out BigInteger fpUnscaled);
-        decimal fpScaled = (decimal)fpUnscaled / (decimal)scaleMultiplier;
+        int scale = tse.Scale ?? 0;
 
-        return ipScaled + fpScaled;
+        // System.Decimal is a 96-bit integer with a scale of at most 28: without the fraction's trailing zeros, the
+        // value either fits exactly or would lose digits, which is refused rather than rounded
+        while(scale > 0 && !unscaled.IsZero && (unscaled % 10).IsZero) {
+            unscaled /= 10;
+            scale--;
+        }
+        if(unscaled.IsZero)
+            scale = 0;
+        BigInteger magnitude = BigInteger.Abs(unscaled);
+        if(scale > 28 || magnitude >> 96 != BigInteger.Zero)
+            throw new OverflowException($"decimal({tse.Precision},{tse.Scale ?? 0}) value {unscaled}e-{scale} does not fit System.Decimal without losing digits; read it with {nameof(ParquetOptions)}.{nameof(ParquetOptions.UseBigDecimal)}");
+
+        byte[] bits = new byte[12];
+        magnitude.TryWriteBytes(bits, out _, isUnsigned: true);
+        return new decimal(BitConverter.ToInt32(bits, 0), BitConverter.ToInt32(bits, 4), BitConverter.ToInt32(bits, 8),
+            unscaled.Sign < 0, (byte)scale);
     }
 
     /// <summary>
