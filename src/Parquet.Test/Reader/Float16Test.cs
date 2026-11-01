@@ -9,16 +9,28 @@ namespace Parquet.Test.Reader;
 public class Float16Test : TestBase {
 
     [Fact]
-    public async Task Float16_column_reads_as_its_two_bytes() {
+    public async Task Float16_column_reads_as_half() {
         await using ParquetReader reader = await ParquetReader.CreateAsync(OpenTestFile("float16.parquet"));
         DataField field = reader.Schema.GetDataFields()[0];
-        Assert.Equal(2, field.FixedLength);
+        Assert.Equal(typeof(Half), field.ClrType);
 
         using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
-        var values = new byte[]?[4];
-        await rowGroup.ReadAsync(field, new Memory<byte[]?>(values));
+        var values = new Half?[4];
+        await rowGroup.ReadAsync<Half>(field, values);
+        Assert.Equal(new Half?[] { (Half)0, (Half)1.5, null, (Half)(-2) }, values);
+    }
 
-        Half?[] halves = Array.ConvertAll(values, v => v == null ? (Half?)null : BitConverter.ToHalf(v));
-        Assert.Equal(new Half?[] { (Half)0, (Half)1.5, null, (Half)(-2) }, halves);
+    [Fact]
+    public async Task Float16_column_reads_as_its_two_bytes_through_the_physical_type() {
+        await using ParquetReader reader = await ParquetReader.CreateAsync(OpenTestFile("float16.parquet"));
+        DataField field = reader.Schema.GetDataFields()[0];
+        Assert.Equal(typeof(ReadOnlyMemory<byte>), field.PhysicalClrType);
+
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        var values = new ReadOnlyMemory<byte>[4];
+        int[] definitions = new int[4];
+        await rowGroup.ReadRawAsync<ReadOnlyMemory<byte>>(field, values, definitions, null);
+        Assert.Equal(new[] { 1, 1, 0, 1 }, definitions);
+        Assert.Equal((Half)1.5, BitConverter.ToHalf(values[1].Span));
     }
 }

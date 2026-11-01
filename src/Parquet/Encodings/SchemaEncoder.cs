@@ -247,7 +247,12 @@ static class SchemaEncoder {
             return options.DecimalType;
         }
 
-        // --- float16: no CLR mapping writes or reads System.Half, so the column is read as its FIXED_LEN_BYTE_ARRAY(2) bytes
+        // --- float16
+
+        if(se.LogicalType?.FLOAT16 != null && se.Type == Type.FIXED_LEN_BYTE_ARRAY && se.TypeLength == 2) {
+            return typeof(System.Half);
+        }
+
 
         // --- temporal types
 
@@ -257,6 +262,10 @@ static class SchemaEncoder {
         }
 
         // time
+        if(options.TimeMapping != TimeMapping.Integer && (se.LogicalType?.TIME != null
+            || se.ConvertedType is ConvertedType.TIME_MILLIS or ConvertedType.TIME_MICROS)) {
+            return options.TimeMapping == TimeMapping.TimeOnly ? typeof(TimeOnly) : typeof(TimeSpan);
+        }
         if(se.LogicalType?.TIME != null) {
             TimeType timeType = se.LogicalType.TIME;
             if(timeType.Unit.MILLIS != null) {
@@ -348,7 +357,11 @@ static class SchemaEncoder {
                     throw new NotSupportedException($"unsupported time unit {time.Unit}");
                 }
 
-                df = new TimeDataField(se.Name, timeUnit) { IsAdjustedToUtc = time.IsAdjustedToUTC };
+                df = new TimeDataField(se.Name, timeUnit, systemType) { IsAdjustedToUtc = time.IsAdjustedToUTC };
+            } else if(se.ConvertedType is ConvertedType.TIME_MILLIS or ConvertedType.TIME_MICROS) {
+                // legacy TIME, without the logical type: adjusted to UTC, as the converted types define it
+                df = new TimeDataField(se.Name,
+                    se.ConvertedType == ConvertedType.TIME_MILLIS ? TimeUnitPrecision.Millis : TimeUnitPrecision.Micros, systemType);
             } else {
                 df = new DataField(se.Name, systemType);
             }
@@ -465,6 +478,9 @@ static class SchemaEncoder {
         if(field is RawDataField raw)
             return raw.ToSchemaElement();
         SType st = field.ClrType;
+        // a TIME column of TimeOnly or TimeSpan is stored as its unit's integer, annotated the same way
+        if(field is TimeDataField time && (st == typeof(TimeOnly) || st == typeof(TimeSpan)))
+            st = time.Precision == TimeUnitPrecision.Millis ? typeof(int) : typeof(long);
         var tse = new SchemaElement { Name = field.Name };
 
         if(field.FieldId != -1) {
@@ -537,6 +553,10 @@ static class SchemaEncoder {
             }
         } else if(st == typeof(float)) {                                                    // float
             tse.Type = Type.FLOAT;
+        } else if(st == typeof(System.Half)) {                                              // half
+            tse.Type = Type.FIXED_LEN_BYTE_ARRAY;
+            tse.TypeLength = 2;
+            tse.LogicalType = new LogicalType { FLOAT16 = new Float16Type() };
         } else if(st == typeof(double)) {                                                   // double
             tse.Type = Type.DOUBLE;
         } else if(st == typeof(BigInteger)) {                                               // BigInteger

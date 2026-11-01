@@ -12,6 +12,8 @@ public enum Order {
     Signed,
     /// <summary>Unsigned integers, and byte strings compared byte by byte.</summary>
     Unsigned,
+    /// <summary>FLOAT16: FIXED_LEN_BYTE_ARRAY(2) compared as the half it holds (NaN no bound, a zero min -0, a zero max +0).</summary>
+    Float16,
 }
 
 /// <summary>
@@ -64,6 +66,18 @@ public sealed class LeafKind<T> : LeafKind where T : struct {
             repetitions == null ? null : (ReadOnlyMemory<int>?)repetitions, default);
 
     public override async Task<(List<object> Values, int[]? Definitions, int[]? Repetitions)> ReadAsync(ParquetRowGroupReader reader, DataField field, int entries) {
+        if((typeof(T) == typeof(TimeOnly) || typeof(T) == typeof(TimeSpan)) && field is TimeDataField time && field.ClrType != typeof(T)) {
+            // TIME reads back as its unit's integer unless ParquetOptions.TimeMapping says otherwise
+            (List<object> raw, int[]? d, int[]? r) = time.Precision == TimeUnitPrecision.Millis
+                ? await Kinds.TimeMillisAsInt.ReadAsync(reader, field, entries)
+                : await Kinds.TimeAsLong.ReadAsync(reader, field, entries);
+            long Ticks(object v) => time.Precision switch {
+                TimeUnitPrecision.Millis => (int)v * TimeSpan.TicksPerMillisecond,
+                TimeUnitPrecision.Micros => (long)v * TimeSpan.TicksPerMicrosecond,
+                _ => (long)v / TimeSpan.NanosecondsPerTick,
+            };
+            return (raw.Select(v => typeof(T) == typeof(TimeOnly) ? (object)new TimeOnly(Ticks(v)) : new TimeSpan(Ticks(v))).ToList(), d, r);
+        }
         if(typeof(T) == typeof(DateOnly) && field.ClrType == typeof(DateTime)) {
             // A DATE column reads back as DateTime unless ParquetOptions.UseDateOnlyTypeForDates is set.
             (List<object> dates, int[]? d, int[]? r) = await Kinds.DateAsDateTime.ReadAsync(reader, field, entries);
@@ -90,6 +104,18 @@ public sealed class LeafKind<T> : LeafKind where T : struct {
 public static class Kinds {
 
     static readonly DateTime Epoch = new(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    // TIME columns read as their unit's integer (the default), for kinds that write TimeOnly or TimeSpan
+    internal static readonly LeafKind<int> TimeMillisAsInt = new() {
+        Name = "time_millis(int)", Order = Order.Signed,
+        Declare = (n, nullable) => new TimeDataField(n, TimeUnitPrecision.Millis, nullable),
+        Generate = r => r.Next(0, 86_400_000), ToPhysical = (v, _) => v,
+    };
+    internal static readonly LeafKind<long> TimeAsLong = new() {
+        Name = "time_micros(long)", Order = Order.Signed,
+        Declare = (n, nullable) => new TimeDataField(n, TimeUnitPrecision.Micros, nullable),
+        Generate = r => r.NextInt64(0, 86_400_000_000), ToPhysical = (v, _) => v,
+    };
 
     internal static readonly LeafKind<DateTime> DateAsDateTime = new() {
         Name = "date", Order = Order.Signed,
@@ -170,6 +196,22 @@ public static class Kinds {
             Generate = r => DateOnly.FromDateTime(Instant(r, TimeSpan.TicksPerDay, DateTimeKind.Utc)),
             ToPhysical = (v, _) => v.DayNumber - DateOnly.FromDateTime(Epoch).DayNumber,
         },
+        // Native .NET types (Lake.NET decision 9): FLOAT16 as Half, TIME as TimeOnly and TimeSpan in each unit.
+        new LeafKind<Half> {
+            Name = "float16", Order = Order.Float16,
+            Declare = (n, nullable) => new DataField(n, typeof(Half), nullable),
+            Generate = r => r.Next(10) switch {
+                0 => Half.NaN, 1 => (Half)0, 2 => -(Half)0, 3 => Half.MaxValue, 4 => Half.MinValue, 5 => Half.Epsilon,
+                6 => Half.PositiveInfinity, _ => (Half)(r.NextDouble() * 2000 - 1000),
+            },
+            ToPhysical = (v, _) => BitConverter.GetBytes(v),
+            Equal = (a, b) => a.Equals(b) || (Half.IsNaN(a) && Half.IsNaN(b)),
+        },
+        Time<TimeOnly>("timeonly", TimeUnitPrecision.Millis, t => new TimeOnly(t), v => v.Ticks),
+        Time<TimeOnly>("timeonly", TimeUnitPrecision.Micros, t => new TimeOnly(t), v => v.Ticks),
+        Time<TimeOnly>("timeonly", TimeUnitPrecision.Nanos, t => new TimeOnly(t), v => v.Ticks),
+        Time<TimeSpan>("timespan", TimeUnitPrecision.Millis, t => new TimeSpan(t), v => v.Ticks),
+        Time<TimeSpan>("timespan", TimeUnitPrecision.Micros, t => new TimeSpan(t), v => v.Ticks),
         // Physical values (lake(0017)): a TIMESTAMP(NANOS) column written and read as long nanoseconds.
         new LeafKind<long> {
             Name = "timestamp_nanos(physical)", Order = Order.Signed,
@@ -178,6 +220,25 @@ public static class Kinds {
             ToPhysical = (v, _) => v,
         },
     ];
+
+    /// <summary>A TIME column written from TimeOnly or TimeSpan, a time of day in whole units of its precision.</summary>
+    static LeafKind Time<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.Interfaces)] T>(string name, TimeUnitPrecision unit, Func<long, T> fromTicks, Func<T, long> toTicks) where T : struct {
+        long tick = unit switch { TimeUnitPrecision.Millis => TimeSpan.TicksPerMillisecond, TimeUnitPrecision.Micros => TimeSpan.TicksPerMicrosecond, _ => 1 };
+        return new LeafKind<T> {
+            Name = $"{name}({unit.ToString().ToLowerInvariant()})", Order = Order.Signed,
+            Declare = (n, nullable) => new TimeDataField(n, unit, typeof(T), nullable),
+            Generate = r => fromTicks(r.Next(6) switch {
+                0 => 0,
+                1 => TimeSpan.TicksPerDay - tick,   // the last instant of the day in this unit
+                _ => r.NextInt64(0, TimeSpan.TicksPerDay) / tick * tick,
+            }),
+            ToPhysical = (v, _) => unit switch {
+                TimeUnitPrecision.Millis => (object)(int)(toTicks(v) / TimeSpan.TicksPerMillisecond),
+                TimeUnitPrecision.Micros => toTicks(v) / TimeSpan.TicksPerMicrosecond,
+                _ => toTicks(v) * TimeSpan.NanosecondsPerTick,
+            },
+        };
+    }
 
     static LeafKind Integer<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.Interfaces)] T>(string name, Func<Random, T> generate, Func<T, object> physical, Order order) where T : struct =>
         new LeafKind<T> {

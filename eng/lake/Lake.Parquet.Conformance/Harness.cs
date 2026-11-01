@@ -210,6 +210,7 @@ public static partial class Harness {
         List<object> physical = values.Select(v => kind.Physical(v, typeLength))
             .Where(p => p is not float f || !float.IsNaN(f))
             .Where(p => p is not double d || !double.IsNaN(d))
+            .Where(p => kind.Order != Order.Float16 || !Half.IsNaN(BitConverter.ToHalf((byte[])p)))
             .ToList();
         if(physical.Count == 0) {
             return null;
@@ -224,10 +225,18 @@ public static partial class Harness {
                 max = p;
             }
         }
+        if(kind.Order == Order.Float16) {
+            // as the format writes zero bounds: a zero min as -0, a zero max as +0
+            if(BitConverter.ToHalf((byte[])min) == Half.Zero)
+                min = BitConverter.GetBytes(Half.NegativeZero);
+            if(BitConverter.ToHalf((byte[])max) == Half.Zero)
+                max = BitConverter.GetBytes(Half.Zero);
+        }
         return (min, max);
     }
 
     static Comparison<object> Comparer(Order order) => (a, b) => (a, b) switch {
+        (byte[] x, byte[] y) when order == Order.Float16 => BitConverter.ToHalf(x).CompareTo(BitConverter.ToHalf(y)),
         (int x, int y) => order == Order.Unsigned ? ((uint)x).CompareTo((uint)y) : x.CompareTo(y),
         (long x, long y) => order == Order.Unsigned ? ((ulong)x).CompareTo((ulong)y) : x.CompareTo(y),
         (float x, float y) => x.CompareTo(y),

@@ -10,7 +10,7 @@ static class StatsCompute {
         if(stats == null)
             return;
 
-        if(typeof(T) == typeof(float) || typeof(T) == typeof(double)) {
+        if(typeof(T) == typeof(float) || typeof(T) == typeof(double) || typeof(T) == typeof(Half)) {
             ComputeFloating(data, stats);
             return;
         }

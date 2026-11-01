@@ -41,6 +41,13 @@ public class ParquetOptions {
     public bool UseDateOnlyTypeForDates { get; set; } = false;
 
     /// <summary>
+    /// The CLR type TIME columns are read as: their unit's integer (the default, lossless), <see cref="TimeOnly"/> or
+    /// <see cref="TimeSpan"/>. To write a TIME column from either, declare it with a <see cref="TimeDataField"/> of that
+    /// type.
+    /// </summary>
+    public TimeMapping TimeMapping { get; set; } = TimeMapping.Integer;
+
+    /// <summary>
     /// Specifies hints to the writers about which encoding to use for specific columns. To get column path use
     /// <see cref="Field.Path"/> on <see cref="DataField"/>.
     /// </summary>
