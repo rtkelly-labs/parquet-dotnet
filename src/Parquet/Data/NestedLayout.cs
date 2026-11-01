@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Parquet.Schema;
 
 namespace Parquet.Data;
@@ -22,12 +23,21 @@ namespace Parquet.Data;
 /// </remarks>
 public sealed class NestedLayout {
 
-    internal NestedLayout(int[] slotCounts, int[][] offsets, NestedValidity[] validity, int valueCount) {
+    internal NestedLayout(int[] slotCounts, int[][] offsets, NestedValidity[] validity, int valueCount,
+        Field?[]? repeatedFields = null, Field[]? groups = null) {
+        RepeatedFields = repeatedFields ?? [];
+        Groups = groups ?? [];
         SlotCounts = slotCounts;
         Offsets = offsets;
         Validity = validity;
         ValueCount = valueCount;
     }
+
+    /// <summary>[layer]: the field whose repeated group makes the layer (null for the rows).</summary>
+    internal Field?[] RepeatedFields { get; }
+
+    /// <summary>The leaf's group ancestors (structs, lists, maps), outermost first.</summary>
+    internal Field[] Groups { get; }
 
     /// <summary>The number of repeated ancestors: lists, maps and legacy repeated fields.</summary>
     public int RepeatedCount => Offsets.Count;
@@ -107,7 +117,7 @@ public sealed class NestedLayout {
         var validity = new NestedValidity[masks.Length];
         for(int o = 0; o < masks.Length; o++)
             validity[o] = new NestedValidity(chain.OptionalField[o], chain.OptionalLayer[o], chain.Optional[o], masks[o].ToArray());
-        return new NestedLayout(counts, offsetArrays, validity, values);
+        return new NestedLayout(counts, offsetArrays, validity, values, chain.RepeatedField, chain.Groups);
     }
 
     /// <summary>
@@ -155,6 +165,25 @@ public sealed class NestedLayout {
         }
     }
 
+    /// <summary>
+    /// Why this leaf's levels and another's, written to the same row group, cannot describe the same rows: they differ
+    /// in a list or map they share (the offsets of its repeated group) or in an optional ancestor they share (its
+    /// validity); null when they agree.
+    /// </summary>
+    internal string? DisagreesWith(NestedLayout other) {
+        for(int layer = 1; layer < Math.Min(SlotCounts.Count, other.SlotCounts.Count) && ReferenceEquals(RepeatedFields[layer], other.RepeatedFields[layer]); layer++) {
+            if(!Offsets[layer - 1].AsSpan().SequenceEqual(other.Offsets[layer - 1]))
+                return $"the elements of '{RepeatedFields[layer]!.Path}'";
+        }
+        foreach(NestedValidity mine in Validity) {
+            foreach(NestedValidity theirs in other.Validity) {
+                if(ReferenceEquals(mine.Field, theirs.Field) && !mine.IsValid.SequenceEqual(theirs.IsValid))
+                    return $"where '{mine.Field.Path}' is null";
+            }
+        }
+        return null;
+    }
+
     /// <summary>A leaf's ancestors as level boundaries: where each repeated and each optional one is defined.</summary>
     private sealed class Chain {
         public int MaxDefinition;
@@ -162,11 +191,14 @@ public sealed class NestedLayout {
         public int[] Optional = [];              // the definition level at which each optional ancestor is present
         public int[] OptionalLayer = [];
         public Field[] OptionalField = [];
+        public Field?[] RepeatedField = [null];
+        public Field[] Groups = [];
 
         public static Chain Of(ParquetSchema schema, DataField leaf) {
             List<Field>? path = Find(schema.Fields, leaf, new List<Field>())
                 ?? throw new ArgumentException($"'{leaf.Path}' is not in this schema", nameof(leaf));
             var repeated = new List<int> { 0 };
+            var repeatedField = new List<Field?> { null };
             var optional = new List<(int Definition, int Layer, Field Field)>();
             int def = 0;
             foreach(Field f in path) {
@@ -176,12 +208,14 @@ public sealed class NestedLayout {
                         if(f.IsNullable)
                             optional.Add((def + 1, repeated.Count - 1, f));
                         repeated.Add(f.MaxDefinitionLevel);
+                        repeatedField.Add(f);
                         break;
                     case StructField when f.IsNullable:
                         optional.Add((f.MaxDefinitionLevel, repeated.Count - 1, f));
                         break;
                     case DataField d when d.IsArray:
                         repeated.Add(d.MaxDefinitionLevel);
+                        repeatedField.Add(d);
                         break;
                     case DataField d when d.IsNullable:
                         optional.Add((d.MaxDefinitionLevel, repeated.Count - 1, f));
@@ -192,6 +226,8 @@ public sealed class NestedLayout {
             return new Chain {
                 MaxDefinition = leaf.MaxDefinitionLevel,
                 RepeatedDefinition = repeated.ToArray(),
+                RepeatedField = repeatedField.ToArray(),
+                Groups = path.FindAll(f => f is not DataField).ToArray(),
                 Optional = optional.ConvertAll(o => o.Definition).ToArray(),
                 OptionalLayer = optional.ConvertAll(o => o.Layer).ToArray(),
                 OptionalField = optional.ConvertAll(o => o.Field).ToArray(),
