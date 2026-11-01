@@ -30,8 +30,8 @@ namespace Parquet.Test;
 /// Cases that fail today are listed, with what they do instead, in data/malformed/known.tsv; each is a candidate
 /// upstream fix (docs/changes/0100-malformed-file-tests.md). A known case passes while it fails the same way, or once
 /// it reads cleanly (then remove it from the list); it fails if it starts failing differently. A kind may list
-/// alternatives (a|b: the outcome differs between .NET 8 and 10), or be "any": the outcome depends on the state of the
-/// shared ArrayPool (huge rents may be served from the pool).
+/// alternatives (a|b: the outcome differs between .NET 8 and 10), or be "any": the outcome depends on the machine
+/// (an allocation sized by the file that may or may not be served).
 /// To regenerate the list, run this class with PARQUET_MALFORMED_KNOWN_OUT=&lt;path&gt;: every case that is not clean
 /// is written there.
 /// </para>

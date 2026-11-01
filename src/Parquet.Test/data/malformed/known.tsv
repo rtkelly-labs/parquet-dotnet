@@ -1,13 +1,5 @@
 # Known findings of MalformedFileTest (docs/changes/0100-malformed-file-tests.md), one case per line:
 # case id <TAB> what it does instead of reading cleanly <TAB> innermost library frame (informational, from a Debug build on .NET 10).
-# a|b: either (the outcome differs between .NET 8 and .NET 10); any: depends on the shared ArrayPool's state (huge rents, F5, F6, F8).
+# a|b: either (the outcome differs between .NET 8 and .NET 10); any: depends on the machine's memory (an allocation sized by a repeated column's value count).
 # Regenerate: run MalformedFileTest with PARQUET_MALFORMED_KNOWN_OUT=<path>, on net8.0 and net10.0, and merge.
-byte_stream_split_256.parquet|meta:values=2^28	any	Parquet.ParquetRowGroupReader.ReadRawColumnDataAsync[T]:149
-delta_binary_packed.parquet|meta:values=2^28	any	Parquet.Meta.Proto.ThriftCompactProtocolReader.SkipField:232
-delta_length_byte_array.parquet|meta:values=2^28	any	Parquet.ParquetRowGroupReader.ReadRawColumnDataAsync[T]:149
-malformed/zstd-nested.parquet|meta:values=2^28	any	Parquet.Meta.Proto.ThriftCompactProtocolReader.SkipField:232
-map_simple.parquet|meta:values=2^28	any	Parquet.File.DataColumnReader.ReadAsync[T]:110
-simplenested.parquet|meta:values=2^28	any	Parquet.Encodings.ParquetPlainEncoder.Decode:1530
-snappy-nation.impala.parquet|meta:values=2^28	any	Parquet.Meta.Proto.ThriftCompactProtocolReader.SkipField:232
-types/alltypes_dictionary.gzip.parquet|meta:values=2^28	any	Parquet.File.DataColumnReader.ReadDictionaryPageAsync[T]:135
-v2/v2_snappy.parquet|meta:values=2^28	any	Parquet.ParquetRowGroupReader.ReadRawColumnDataAsync[T]:150
+v2/v2_snappy.parquet|meta:values=2^28	any	Parquet.File.DataColumnReader.ReadDictionaryPageAsync[T]:135
