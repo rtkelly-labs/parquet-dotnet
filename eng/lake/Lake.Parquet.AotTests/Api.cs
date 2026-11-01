@@ -53,6 +53,7 @@ static class Api {
         await LargeBooleanColumnAsync();
         await SingleValueDictionaryAsync();
         await AppendWithAnotherSchemaAsync();
+        await GeometryStatisticsAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -677,6 +678,39 @@ static class Api {
             } catch(ParquetException e) {
                 Check(e.Message.Contains("does not match", StringComparison.Ordinal), $"append with {what}: refused with '{e.Message}'");
             }
+        }
+    }
+
+    /// <summary>
+    /// A GEOMETRY column as parquet-cpp (pyarrow 26) writes it: WKB points with geospatial statistics (bounding box,
+    /// geometry types) in the column chunk. Read, then appended to so that the footer is rewritten with those
+    /// statistics, and read again.
+    /// </summary>
+    static async Task GeometryStatisticsAsync() {
+        byte[] original = Resource("lake_geometry.parquet");
+        await CheckAsync(original, "GEOMETRY from parquet-cpp");
+        ParquetSchema schema;
+        await using(ParquetReader r = await ParquetReader.CreateAsync(new MemoryStream(original))) {
+            schema = r.Schema;
+        }
+        using var appended = new MemoryStream();
+        appended.Write(original);
+        await using(ParquetWriter writer = await ParquetWriter.CreateAsync(schema, appended, append: true)) {
+        }
+        await CheckAsync(appended.ToArray(), "GEOMETRY from parquet-cpp, footer rewritten by an append");
+
+        static async Task CheckAsync(byte[] file, string what) {
+            await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+            PMeta.ColumnMetaData meta = reader.Metadata!.RowGroups[0].Columns[0].MetaData!;
+            PMeta.BoundingBox? box = meta.GeospatialStatistics?.Bbox;
+            Check(reader.Metadata.Schema[1].LogicalType?.GEOMETRY != null
+                && box is { Xmin: 0, Xmax: 9, Ymin: -9, Ymax: 0 } && meta.GeospatialStatistics!.GeospatialTypes is [1],
+                $"{what}: logical type and geospatial statistics ({box?.Xmin}..{box?.Xmax}, {box?.Ymin}..{box?.Ymax})");
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            var points = new byte[]?[10];
+            await rowGroup.ReadAsync(reader.Schema.GetDataFields()[0], new Memory<byte[]?>(points));
+            Check(points.Select((p, i) => p != null && p.Length == 21 && BitConverter.ToDouble(p, 5) == i && BitConverter.ToDouble(p, 13) == -i).All(ok => ok),
+                $"{what}: WKB points");
         }
     }
 

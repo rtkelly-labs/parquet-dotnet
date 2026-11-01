@@ -116,6 +116,10 @@ void GenerateAtomicFieldWriter(int fieldId, string typeId, string getter, bool r
             if (required) getter += " ?? string.Empty";
             sb.AppendLine($"proto.WriteStringField({fieldId}, {getter});");
             break;
+        case "double":
+            if (!required) getter += ".Value";
+            sb.AppendLine($"proto.WriteDoubleField({fieldId}, {getter});");
+            break;
     }
 }
 
