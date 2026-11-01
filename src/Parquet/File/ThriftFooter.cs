@@ -87,6 +87,60 @@ class ThriftFooter {
         _fileMeta.NumRows += totalRowCount;
     }
 
+    /// <summary>A column chunk's page index and bloom filter, written after the last row group (WriteIndexesAsync).</summary>
+    internal sealed record PendingIndexes(ColumnChunk Chunk, ColumnIndex? ColumnIndex, OffsetIndex? OffsetIndex,
+        Data.BloomFilter? BloomFilter, Encryption.ColumnEncryptor? Encryptor);
+
+    private readonly List<PendingIndexes> _pendingIndexes = new();
+
+    public void AddPendingIndexes(PendingIndexes indexes) => _pendingIndexes.Add(indexes);
+
+    /// <summary>
+    /// Writes the queued column indexes, then offset indexes, then bloom filters at the stream's position (between the
+    /// last row group and the footer, where PageIndex.md puts the page index), setting each chunk's offsets and lengths.
+    /// An encrypted column's are encrypted with its key, each structure a module.
+    /// </summary>
+    public async Task WriteIndexesAsync(Stream s) {
+        foreach(PendingIndexes p in _pendingIndexes) {
+            if(p.ColumnIndex == null)
+                continue;
+            p.Chunk.ColumnIndexOffset = s.Position;
+            p.Chunk.ColumnIndexLength = await WriteModuleAsync(s, Serialize(p.ColumnIndex.Write), p.Encryptor, Encryption.ModuleType.ColumnIndex);
+        }
+        foreach(PendingIndexes p in _pendingIndexes) {
+            if(p.OffsetIndex == null)
+                continue;
+            p.Chunk.OffsetIndexOffset = s.Position;
+            p.Chunk.OffsetIndexLength = await WriteModuleAsync(s, Serialize(p.OffsetIndex.Write), p.Encryptor, Encryption.ModuleType.OffsetIndex);
+        }
+        foreach(PendingIndexes p in _pendingIndexes) {
+            if(p.BloomFilter == null)
+                continue;
+            var header = new BloomFilterHeader {
+                NumBytes = p.BloomFilter.SizeInBytes,
+                Algorithm = new BloomFilterAlgorithm { BLOCK = new SplitBlockAlgorithm() },
+                Hash = new BloomFilterHash { XXHASH = new XxHash() },
+                Compression = new BloomFilterCompression { UNCOMPRESSED = new Uncompressed() },
+            };
+            p.Chunk.MetaData!.BloomFilterOffset = s.Position;
+            int length = await WriteModuleAsync(s, Serialize(header.Write), p.Encryptor, Encryption.ModuleType.BloomFilterHeader);
+            length += await WriteModuleAsync(s, p.BloomFilter.Bitset.ToArray(), p.Encryptor, Encryption.ModuleType.BloomFilterBitset);
+            p.Chunk.MetaData.BloomFilterLength = length;
+        }
+        _pendingIndexes.Clear();
+
+        static byte[] Serialize(System.Action<ThriftCompactProtocolWriter> write) {
+            using var ms = new MemoryStream();
+            write(new ThriftCompactProtocolWriter(ms));
+            return ms.ToArray();
+        }
+        static async Task<int> WriteModuleAsync(Stream s, byte[] data, Encryption.ColumnEncryptor? encryptor, Encryption.ModuleType type) {
+            byte[] module = encryptor == null ? data : encryptor.Module(data, type);
+            await s.WriteAsync(module, 0, module.Length);
+            return module.Length;
+        }
+    }
+
     public async Task<long> WriteAsync(Stream s, CancellationToken cancellationToken = default) {
         using var ms = new MemoryStream();
         _fileMeta.Write(new ThriftCompactProtocolWriter(ms));

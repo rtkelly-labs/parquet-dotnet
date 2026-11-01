@@ -24,6 +24,10 @@ sealed class ColumnEncryptor {
             ? AesModules.Aad(_fileAad, ModuleType.DictionaryPageHeader, _rowGroup, _column)
             : AesModules.Aad(_fileAad, ModuleType.DataPageHeader, _rowGroup, _column, page));
 
+    /// <summary>Encrypts a whole module: a column or offset index, or a bloom filter's header or bitset (always AES-GCM).</summary>
+    public byte[] Module(ReadOnlySpan<byte> data, ModuleType type) =>
+        AesModules.EncryptGcm(_key, data, AesModules.Aad(_fileAad, type, _rowGroup, _column));
+
     public byte[] Page(ReadOnlySpan<byte> data, bool dictionary, int page) =>
         _ctr
             ? AesModules.EncryptCtr(_key, data)
