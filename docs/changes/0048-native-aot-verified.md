@@ -34,7 +34,9 @@ own AOT consumers. Analyzer-clean is a claim; this makes it a build error to bre
     plain-encoded twin decodes to, with decimals as `decimal` and `BigDecimal` and dates as `DateTime` and `DateOnly`;
     every `DateTimeDataField` format and unit; a 100,003-value boolean column; a one-value dictionary; appends with
     another schema refused; a GEOMETRY file from parquet-cpp, its geospatial statistics read before and after a footer
-    rewrite (1,068 checks; enum fields' nullable type is the same natively, and enum columns
+    rewrite; page indexes and bloom filters read from a parquet-cpp file and written by the library; footer structures
+    the library never writes itself (IEEE 754 total and INT96 timestamp column orders, a VARIANT group, a GEOGRAPHY
+    column) read from apache/parquet-testing files and kept through a footer rewrite (1,085 checks; enum fields' nullable type is the same natively, and enum columns
     are refused alike: they are the serializer's, which Lake.Parquet leaves out);
   - `cases`: generated cases (every kind and shape, codec, hint, page layout, encryption): values, levels, field IDs,
     row counts and statistics read back exactly;
@@ -64,7 +66,7 @@ publishing the suite with `PublishAot` and `TrimmerSingleWarn=false` analyses th
 reported on its own. Both report none, and the canary step proves they look at uncalled code (it fails with
 `IL3050` and `IL2057`). The native runs then show that the code behaves the same compiled ahead of time.
 
-Coverage is now 90.6% of the package's lines (11,837 of 13,066), with the checks above and with uncalled code left
+Coverage is now 90.6% of the package's lines (12,235 of 13,507, the package grown by the page index and bloom filters), with the checks above and with uncalled code left
 out of the package (`lake(0050)`, `lake(0051)`, `lake(0054)`). The wider checks found four upstream bugs, fixed in
 `lake(0052)` (files with a FLOAT16 column could not be opened), `lake(0053)` (INT96 as `BigInteger` could be neither
 written nor read), `lake(0055)` (a `DateTime` written as DATE before 1970, or just before midnight, was stored as

@@ -4,7 +4,8 @@ name: Lake.Parquet
 # namespace on a throwaway copy, with upstream's own test suite run against the renamed build.
 # README.md, "How Lake.Parquet is built", explains the rename.
 #
-# This file is the fork's own; upstream's build.yml is left as upstream wrote it and still runs.
+# This file is the fork's own; upstream's build.yml is left as upstream wrote it (so rebaselines never conflict on
+# it) but is disabled in the fork's Actions settings: the suite job below runs upstream's tests.
 # `lake-ci` is the required check. Unlike upstream's workflow it has no paths-ignore, so a PR that
 # only edits a change record still reports it. A rebaselined stack is pushed to staging/<name> and
 # built here first: `lake-stack rebaseline --push` publishes it to master only once lake-ci passed on
