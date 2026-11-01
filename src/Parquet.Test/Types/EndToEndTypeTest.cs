@@ -680,7 +680,7 @@ public class EndToEndTypeTest : TestBase {
     [Fact]
     public async Task Type_nullable_decimal_writes_and_reads() {
         var field = new DecimalDataField("decimal?", 4, 1, true, true);
-        decimal? actual = await WriteReadSingleNullableAsync<decimal>(field, (decimal?)10.44M);
+        decimal? actual = await WriteReadSingleNullableAsync<decimal>(field, (decimal?)10.44M, new ParquetOptions { RoundDecimalsToScale = true });
         Assert.Equal(10.4M, actual);
     }
 

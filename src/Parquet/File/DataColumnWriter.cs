@@ -45,6 +45,8 @@ class DataColumnWriter {
         FieldPath fullPath,
         WritingColumn<T> wc,
         CancellationToken cancellationToken) where T : struct {
+        if(typeof(T) == typeof(decimal) && !_options.RoundDecimalsToScale)
+            CheckDecimalScale(wc.Values.AsSpan<T, decimal>());
         // Num_values in the chunk does include null values - I have validated this by dumping spark-generated file.
         ColumnChunk chunk = _footer.CreateColumnChunk(
             _options.CompressionMethod, _stream, _schemaElement.Type!.Value, fullPath, wc.NumValues,
@@ -152,6 +154,21 @@ class DataColumnWriter {
                 }
             }
             return r.ToList();
+        }
+    }
+
+    /// <summary>
+    /// A decimal with more fractional digits than the column's scale cannot be written exactly: it is refused unless
+    /// <see cref="ParquetOptions.RoundDecimalsToScale"/> asks for upstream's truncation.
+    /// </summary>
+    private void CheckDecimalScale(ReadOnlySpan<decimal> values) {
+        int scale = _schemaElement.Scale ?? 0;
+        if(scale >= 28)
+            return;
+        foreach(decimal d in values) {
+            if(decimal.Round(d, scale) != d)
+                throw new ParquetException($"value '{d}' has more fractional digits than decimal({_schemaElement.Precision},{scale}) holds; " +
+                    $"set {nameof(ParquetOptions)}.{nameof(ParquetOptions.RoundDecimalsToScale)} to truncate it");
         }
     }
 

@@ -109,6 +109,13 @@ public class ParquetOptions {
     public bool UseBigDecimal { get; set; } = false;
 
     /// <summary>
+    /// When true, a decimal with more fractional digits than its column's scale is truncated to the scale when written,
+    /// as upstream Parquet.Net does. Off by default: such a value is refused with a <see cref="ParquetException"/>,
+    /// since the file cannot hold it exactly (Lake.NET decision 9).
+    /// </summary>
+    public bool RoundDecimalsToScale { get; set; } = false;
+
+    /// <summary>
     /// Write min/max/null-count statistics in column chunk metadata and data page headers (the default). Files whose
     /// statistics are never used for pruning (position delete files, for instance) can leave them out.
     /// </summary>
