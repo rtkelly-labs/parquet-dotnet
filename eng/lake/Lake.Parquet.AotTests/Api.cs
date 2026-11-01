@@ -55,6 +55,7 @@ static class Api {
         await AppendWithAnotherSchemaAsync();
         await GeometryStatisticsAsync();
         await PageIndexAndBloomFiltersAsync();
+        await PageIndexAndBloomFiltersWrittenAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -746,6 +747,34 @@ static class Api {
             int falsePositives = Enumerable.Range(0, 1000).Count(i => idFilter!.MightContain(1_000_000L + i) || sFilter!.MightContain($"absent-{i}"));
             Check(falsePositives < 100, $"bloom filters, row group {g}: {falsePositives} of 1000 absent values reported present");
         }
+    }
+
+    /// <summary>A page index and bloom filters written by the library (WritePageIndex, BloomFilters), read back.</summary>
+    static async Task PageIndexAndBloomFiltersWrittenAsync() {
+        var id = new DataField<long>("id");
+        var key = new DataField<string>("key");
+        long[] ids = Enumerable.Range(0, 1000).Select(i => i * 7L).ToArray();
+        string?[] keys = Enumerable.Range(0, 1000).Select(i => (string?)$"k{i % 300}").ToArray();
+        var options = new ParquetOptions { WritePageIndex = true, MaxDataPageValues = 250 };
+        options.BloomFilters["id"] = 0.01;
+        options.BloomFilters["key"] = 0.01;
+        byte[] file = await WriteAsync(new ParquetSchema(id, key), options, async rg => {
+            await rg.WriteAsync<long>(id, ids);
+            await rg.WriteAsync(key, keys);
+        });
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        DataField[] f = reader.Schema.GetDataFields();
+        PMeta.OffsetIndex? offsets = await rowGroup.ReadOffsetIndexAsync(f[0]);
+        PMeta.ColumnIndex? index = await rowGroup.ReadColumnIndexAsync(f[0]);
+        Check(offsets?.PageLocations.Select(p => p.FirstRowIndex).SequenceEqual(new long[] { 0, 250, 500, 750 }) == true
+            && index != null && Enumerable.Range(0, 4).All(p => BitConverter.ToInt64(index.MinValues[p]) == p * 250 * 7L && BitConverter.ToInt64(index.MaxValues[p]) == (p * 250 + 249) * 7L),
+            "page index written: four pages, located and bounded");
+        BloomFilter? idFilter = await rowGroup.ReadBloomFilterAsync(f[0]);
+        BloomFilter? keyFilter = await rowGroup.ReadBloomFilterAsync(f[1]);
+        Check(idFilter != null && keyFilter != null && ids.All(v => idFilter.MightContain(v)) && keys.All(v => keyFilter.MightContain(v!))
+            && Enumerable.Range(0, 1000).Count(i => idFilter.MightContain(i * 7L + 3) || keyFilter.MightContain($"x{i}")) < 60,
+            "bloom filters written: every value present, few false positives");
     }
 
     sealed class ForwardOnlyStream(Stream inner) : Stream {
