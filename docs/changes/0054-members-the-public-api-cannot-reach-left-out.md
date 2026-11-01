@@ -10,7 +10,7 @@ depends_on: [0051]
 ## What and why
 
 Lake.NET decision 6 leaves code nothing in the package calls out of it. `lake(0050)` and `lake(0051)` did that for
-members found by reading the code. This change finds them mechanically and leaves out 43 more: ILLink, run on the
+members found by reading the code. This change finds them mechanically and leaves out 41 more (the thrift bool-list helpers it first found went back in with `lake(0057)`, whose column index uses them): ILLink, run on the
 Lake build in library mode with only the public API as roots (the copy built without its `InternalsVisibleTo`
 entries, so internals count only when public code reaches them), removes every method nothing public can reach.
 Those methods, mapped back to their declarations by signature, are added to `eng/lake/strip-members.json` with their
@@ -23,7 +23,7 @@ syntax hashes:
   `Decode8ValuesLE(…Span<long>…)`, `DeltaBinaryPackedEncoder.CalculateBitWidth` for `short`, `ushort` and `uint`
   (`lake(0027)` routes them through `int`) and `CanEncodeULongArray`, `ParquetPlainEncoder.Encode(ReadOnlySpan<byte[]>…)`
   and `Decode(…Span<string>…)`;
-- `DataColumnReader.GetColumnStatistics`, the thrift bool helpers, `MeteredWriteStream.TotalBytesWritten`,
+- `DataColumnReader.GetColumnStatistics`, `MeteredWriteStream.TotalBytesWritten`,
   `RawColumnData`'s level-memory and `ValuesMemory` accessors.
 
 Members the trimmer found unreachable that upstream's own tests call stay, so the renamed test run keeps all of

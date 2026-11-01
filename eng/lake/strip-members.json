@@ -260,8 +260,6 @@
   {"file": "src/Parquet/Extensions/StreamExtensions.cs", "type": "StreamExtensions", "member": "ReadInt32", "parameters": "Stream", "sha256": "153e872a8144783d"},
   {"file": "src/Parquet/Extensions/StreamExtensions.cs", "type": "StreamExtensions", "member": "ReadInt64", "parameters": "Stream", "sha256": "cf7d9caa50784bbd"},
   {"file": "src/Parquet/Extensions/TaskExtensions.cs", "type": "TaskExtensions", "member": "SequentialWhenAll", "parameters": "IEnumerable<Task<T>>", "sha256": "a969e3059be4d728"},
-  {"file": "src/Parquet/Meta/Proto/ThriftCompactProtocolReader.cs", "type": "ThriftCompactProtocolReader", "member": "ReadBool", "parameters": "", "sha256": "9174594092d37b0c"},
-  {"file": "src/Parquet/Meta/Proto/ThriftCompactProtocolWriter.cs", "type": "ThriftCompactProtocolWriter", "member": "WriteBoolValue", "parameters": "bool", "sha256": "a024d4b5f2e57caa"},
   {"file": "src/Parquet/Extensions/ThriftExtensions.cs", "type": "ThriftExtensions", "member": "IsAnnotatedWithAny", "parameters": "SchemaElement, ConvertedType[]?", "sha256": "08b6bdde190d8964"},
   {"file": "src/Parquet/Extensions/OtherExtensions.cs", "type": "OtherExtensions", "member": "AddPath", "parameters": "string, string[]", "sha256": "405d091a276d9db9"},
   {"file": "src/Parquet/Encodings/DeltaBinaryPackedEncoder.cs", "type": "DeltaBinaryPackedEncoder", "member": "CanEncodeULongArray", "parameters": "ulong[], int, int", "sha256": "bdad8e92148426f4"},
