@@ -26,10 +26,7 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
     private readonly Encryption.FileEncryptor? _encryptor;
 
     private ParquetWriter(ParquetSchema schema, Stream output, ParquetOptions? options = null, bool append = false)
-       : base(output.CanSeek == true ? output : new MeteredWriteStream(output)) {
-        if(output == null)
-            throw new ArgumentNullException(nameof(output));
-
+       : base(output?.CanSeek == true ? output : new MeteredWriteStream(output ?? throw new ArgumentNullException(nameof(output)))) {
         if(!output.CanWrite)
             throw new ArgumentException("stream is not writeable", nameof(output));
         _schema = schema ?? throw new ArgumentNullException(nameof(schema));
