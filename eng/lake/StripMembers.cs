@@ -10,6 +10,10 @@
 // by file, type, name and parameter types, with a hash of its syntax. A member whose syntax no longer matches its
 // hash (upstream changed it), or that no longer exists, fails the run rather than being removed blindly: review it,
 // then update its hash with --hashes. Whole files are left out by Lake.Parquet.targets instead.
+//
+// An entry with a "branch" leaves the member in and removes one branch of it: an if statement whose condition is that
+// text (an else-if is spliced out of its chain; a leading if gives way to its else), or the switch section whose labels
+// are that text ("case 0:"). The hash is still the whole member's, so a change anywhere in it stops the run.
 
 using System.Security.Cryptography;
 using System.Text;
@@ -34,7 +38,8 @@ List<Entry> entries = manifest.RootElement.EnumerateArray()
         e.GetProperty("type").GetString()!,
         e.GetProperty("member").GetString()!,
         e.GetProperty("parameters").GetString()!,
-        e.GetProperty("sha256").GetString()!))
+        e.GetProperty("sha256").GetString()!,
+        e.TryGetProperty("branch", out JsonElement branch) ? branch.GetString() : null))
     .ToList();
 if (entries.Count == 0)
 {
@@ -43,7 +48,9 @@ if (entries.Count == 0)
 }
 
 var problems = new List<string>();
-int removed = 0;
+foreach (IGrouping<string, Entry> twice in entries.GroupBy(e => $"{e.File}: {e.Type}.{e.Member}({e.Parameters}) {e.Branch}").Where(g => g.Count() > 1))
+    problems.Add($"{twice.Key.TrimEnd()}: named {twice.Count()} times: keep one entry");
+int removed = 0, removedBranches = 0;
 foreach (IGrouping<string, Entry> file in entries.GroupBy(e => e.File))
 {
     string path = Path.Combine(root, file.Key);
@@ -54,6 +61,7 @@ foreach (IGrouping<string, Entry> file in entries.GroupBy(e => e.File))
     }
     SyntaxNode tree = CSharpSyntaxTree.ParseText(File.ReadAllText(path), new CSharpParseOptions(LanguageVersion.Preview), path).GetRoot();
     var doomed = new List<MemberDeclarationSyntax>();
+    var doomedBranches = new List<SyntaxNode>();
     foreach (Entry entry in file)
     {
         List<MemberDeclarationSyntax> matches = tree.DescendantNodes()
@@ -61,7 +69,7 @@ foreach (IGrouping<string, Entry> file in entries.GroupBy(e => e.File))
             .Where(m => m.Parent is TypeDeclarationSyntax type && type.Identifier.Text == entry.Type)
             .Where(m => Name(m) == entry.Member && Signature(m) == entry.Parameters)
             .ToList();
-        string id = $"{entry.File}: {entry.Type}.{entry.Member}({entry.Parameters})";
+        string id = $"{entry.File}: {entry.Type}.{entry.Member}({entry.Parameters}){(entry.Branch == null ? "" : $" branch '{entry.Branch}'")}";
         if (matches.Count != 1)
         {
             problems.Add($"{id}: {(matches.Count == 0 ? "not found (upstream removed or renamed it)" : "matches more than one member")}: update the manifest");
@@ -78,7 +86,31 @@ foreach (IGrouping<string, Entry> file in entries.GroupBy(e => e.File))
             problems.Add($"{id}: upstream changed it (hash {hash}, manifest {entry.Sha256}): check it is still unneeded, then update its hash");
             continue;
         }
-        doomed.Add(matches[0]);
+        if (entry.Branch == null)
+        {
+            doomed.Add(matches[0]);
+            continue;
+        }
+        List<SyntaxNode> branches = Branches(matches[0], entry.Branch).ToList();
+        if (branches.Count != 1)
+        {
+            problems.Add($"{id}: {(branches.Count == 0 ? "no such branch" : "matches more than one branch")}: update the manifest");
+            continue;
+        }
+        doomedBranches.Add(branches[0]);
+    }
+    if (!printHashes && doomedBranches.Count > 0)
+    {
+        var branchAnnotation = new SyntaxAnnotation("lake-strip-branch");
+        tree = tree.ReplaceNodes(doomedBranches, (_, n) => n.WithAdditionalAnnotations(branchAnnotation));
+        while (tree.GetAnnotatedNodes(branchAnnotation).FirstOrDefault() is SyntaxNode next)
+            tree = RemoveBranch(tree, next);
+        removedBranches += doomedBranches.Count;
+        // members to remove were found in the tree before; find them again in the new one
+        doomed = doomed.Select(d => tree.DescendantNodes().OfType<MemberDeclarationSyntax>()
+            .Single(m => m.Parent is TypeDeclarationSyntax t && d.Parent is TypeDeclarationSyntax dt && t.Identifier.Text == dt.Identifier.Text
+                && Name(m) == Name(d) && Signature(m) == Signature(d))).ToList();
+        File.WriteAllText(path, tree.ToFullString());
     }
     if (!printHashes && doomed.Count > 0)
     {
@@ -113,9 +145,40 @@ if (problems.Count > 0)
 }
 if (!printHashes)
 {
-    Console.WriteLine($"Left out {removed} member(s) named in {args[1]} under {root}.");
+    Console.WriteLine($"Left out {removed} member(s) and {removedBranches} branch(es) named in {args[1]} under {root}.");
 }
 return 0;
+
+// The if statements whose condition, and the switch sections whose labels, are the branch text, whitespace normalised.
+static IEnumerable<SyntaxNode> Branches(MemberDeclarationSyntax member, string branch)
+{
+    string want = SyntaxFactory.ParseExpression(branch).NormalizeWhitespace().ToString();
+    foreach (SyntaxNode node in member.DescendantNodes())
+    {
+        if (node is IfStatementSyntax ifs && ifs.Condition.NormalizeWhitespace().ToString() == want)
+            yield return node;
+        else if (node is SwitchSectionSyntax section
+            && string.Join(" ", section.Labels.Select(l => l.NormalizeWhitespace().ToString())) == branch.Trim())
+            yield return node;
+    }
+}
+
+// An else-if leaves its chain (the if before it takes its else); a leading if gives way to its else, or goes; a switch
+// section goes.
+static SyntaxNode RemoveBranch(SyntaxNode tree, SyntaxNode branch)
+{
+    switch (branch)
+    {
+        case SwitchSectionSyntax:
+            return tree.RemoveNode(branch, SyntaxRemoveOptions.KeepNoTrivia)!;
+        case IfStatementSyntax ifs when ifs.Parent is ElseClauseSyntax elseClause && elseClause.Parent is IfStatementSyntax previous:
+            return tree.ReplaceNode(previous, previous.WithElse(ifs.Else));
+        case IfStatementSyntax ifs when ifs.Else != null:
+            return tree.ReplaceNode(ifs, ifs.Else.Statement.WithTriviaFrom(ifs));
+        default:
+            return tree.RemoveNode(branch, SyntaxRemoveOptions.KeepNoTrivia)!;
+    }
+}
 
 // The member's syntax, whitespace and comments normalised away, so formatting changes do not count as edits.
 static string Hash(MemberDeclarationSyntax member) =>
@@ -135,4 +198,4 @@ static string Signature(MemberDeclarationSyntax member) => member switch
     _ => "",
 };
 
-sealed record Entry(string File, string Type, string Member, string Parameters, string Sha256);
+sealed record Entry(string File, string Type, string Member, string Parameters, string Sha256, string? Branch);

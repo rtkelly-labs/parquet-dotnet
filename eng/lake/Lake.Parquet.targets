@@ -53,7 +53,7 @@
         <IsAotCompatible>true</IsAotCompatible>
     </PropertyGroup>
     <ItemGroup Condition="'$(MSBuildProjectName)' == 'Parquet' and '$(LakeKeepSerializer)' != 'true'">
-        <Compile Remove="Serialization\ParquetSerializer.cs;Serialization\ParquetClrSchemaExtensions.cs;Serialization\Dremel\**;Extensions\ExpressionExtensions.cs;Utils\FileMerger.cs" />
+        <Compile Remove="Serialization\ParquetSerializer.cs;Serialization\ParquetClrSchemaExtensions.cs;Serialization\Dremel\**;Extensions\ExpressionExtensions.cs;Utils\FileMerger.cs;Data\RawColumnData.cs" />
         <Compile Include="$(MSBuildThisFileDirectory)Strip\*.cs" />
     </ItemGroup>
 
@@ -63,6 +63,11 @@
       legacy lists) keep running against the fork.
     -->
     <ItemGroup Condition="'$(MSBuildProjectName)' == 'Parquet.Test' and '$(LakeKeepSerializer)' != 'true'">
-        <Compile Remove="Serialisation\**;Integration\ParquetSerializerTest.cs;Extensions\ParquetClrSchemaExtensionsTest.cs;EncryptionTest.cs;ParquetReaderOnTestFilesTest.cs;Reader\ParquetCsvComparison.cs;Reader\TestDataTest.cs;Schema\LegacyListTest.cs;Utils\FIleMergerTest.cs" />
+        <Compile Remove="Serialisation\**;Integration\ParquetSerializerTest.cs;Extensions\ParquetClrSchemaExtensionsTest.cs;EncryptionTest.cs;ParquetReaderOnTestFilesTest.cs;Reader\ParquetCsvComparison.cs;Reader\TestDataTest.cs;Schema\LegacyListTest.cs;Utils\FIleMergerTest.cs;Extensions\StatsComputeTest.cs" />
+        <!--
+          RawColumnData only tests use (with ParquetRowGroupReader.ReadRawColumnDataAsync, left out by the manifest):
+          compiled into the test assembly instead of the package. LakeRawColumnDataReader.cs stands in for the helper.
+        -->
+        <Compile Include="..\Parquet\Data\RawColumnData.cs" />
     </ItemGroup>
 </Project>
