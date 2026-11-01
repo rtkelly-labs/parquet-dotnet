@@ -274,5 +274,10 @@
   {"file": "src/Parquet/WritingColumn.cs", "type": "WritingColumn", "member": "Pack", "parameters": "ParquetOptions", "sha256": "0609ceade10e01db", "branch": "_dictionary == null"},
   {"file": "src/Parquet/ParquetRowGroupWriter.cs", "type": "ParquetRowGroupWriter", "member": "WriteAsyncInternal", "parameters": "DataField, WritingColumn<T>, Dictionary<string, string>?, CancellationToken", "sha256": "b98671df3f05187d", "branch": "field == null"},
   {"file": "src/Parquet/Extensions/MemoryExtensions.cs", "type": "MemoryExtensions", "member": "AsReadOnlyMemory", "parameters": "string", "sha256": "2bf2c3e6e8dada38"},
-  {"file": "src/Parquet/Extensions/MemoryExtensions.cs", "type": "MemoryExtensions", "member": "AsReadOnlyMemory", "parameters": "byte[]", "sha256": "13e04f2ffd34b1d4"}
+  {"file": "src/Parquet/Extensions/MemoryExtensions.cs", "type": "MemoryExtensions", "member": "AsReadOnlyMemory", "parameters": "byte[]", "sha256": "13e04f2ffd34b1d4"},
+  {"file": "src/Parquet/Encodings/SchemaEncoder.cs", "type": "SchemaEncoder", "member": "GetSystemType", "parameters": "SchemaElement, ParquetOptions", "sha256": "f97aa6551dd301cf", "branch": "se.Type == null"},
+  {"file": "src/Parquet/File/DataColumnWriter.cs", "type": "ColumnMetrics", "member": "GetUsedEncodings", "parameters": "", "sha256": "8b631a48578be07b", "branch": "page.DataPageHeaderV2 != null"},
+  {"file": "src/Parquet/File/ThriftFooter.cs", "type": "ReferenceEqualityComparer", "member": "Default", "parameters": "", "sha256": "232cc60fe3615cf5"},
+  {"file": "src/Parquet/ParquetWriter.cs", "type": "ParquetWriter", "member": "PrepareFileAsync", "parameters": "bool, CancellationToken", "sha256": "f978cff0f2fa07fa", "branch": "else:_footer == null"},
+  {"file": "src/Parquet/File/ThriftFooter.cs", "type": "ThriftFooter", "member": "CreateModelSchema", "parameters": "FieldPath?, IList<Field>, int, int, ParquetOptions", "sha256": "b2bec81b203c9738", "branch": "else:se.Path != null"}
 ]
