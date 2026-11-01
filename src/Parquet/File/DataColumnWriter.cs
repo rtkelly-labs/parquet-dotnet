@@ -64,13 +64,77 @@ class DataColumnWriter {
         chunk.MetaData.TotalCompressedSize = metrics.CompressedSize;
         chunk.MetaData.TotalUncompressedSize = metrics.UncompressedSize;
 
+        // the page index and bloom filter, written after the last row group
+        OffsetIndex? offsetIndex = metrics.Locations == null ? null : new OffsetIndex { PageLocations = metrics.Locations };
+        ColumnIndex? columnIndex = metrics.PageStatistics == null ? null : ToColumnIndex(metrics.PageStatistics);
+        Data.BloomFilter? bloomFilter = _options.BloomFilters.TryGetValue(fullPath.ToString(), out double fpp)
+            ? ToBloomFilter(wc.Values, fpp)
+            : null;
+        if(offsetIndex != null || bloomFilter != null)
+            _footer.AddPendingIndexes(new ThriftFooter.PendingIndexes(chunk, columnIndex, offsetIndex, bloomFilter, _encryptor));
+
         return chunk;
+    }
+
+    /// <summary>
+    /// The column index from each data page's statistics: null for a column with no defined order, or when a page
+    /// with values has no bounds (only NaNs), where the offset index is still written.
+    /// </summary>
+    private ColumnIndex? ToColumnIndex(List<(Statistics? Statistics, long NullCount)> pages) {
+        if(Data.ColumnStatisticsRules.SortOrder(_schemaElement) == Data.ColumnSortOrder.Unknown)
+            return null;
+        var index = new ColumnIndex { BoundaryOrder = BoundaryOrder.UNORDERED, NullCounts = new List<long>() };
+        foreach((Statistics? stats, long nullCount) in pages) {
+            bool nullPage = stats == null;
+            if(!nullPage && (stats!.MinValue == null || stats.MaxValue == null))
+                return null;
+            index.NullPages.Add(nullPage);
+            index.MinValues.Add(nullPage ? [] : stats!.MinValue!);
+            index.MaxValues.Add(nullPage ? [] : stats!.MaxValue!);
+            index.NullCounts.Add(nullCount);
+        }
+        return index;
+    }
+
+    /// <summary>
+    /// A bloom filter of the chunk's values, hashed as their PLAIN encoding in the column's physical type, sized for the
+    /// number of distinct values at false positive probability <paramref name="fpp"/>.
+    /// </summary>
+    private Data.BloomFilter ToBloomFilter<T>(ReadOnlySpan<T> values, double fpp) where T : struct {
+        int width = _schemaElement.Type switch {
+            Meta.Type.INT32 or Meta.Type.FLOAT => 4,
+            Meta.Type.INT64 or Meta.Type.DOUBLE => 8,
+            Meta.Type.INT96 => 12,
+            Meta.Type.FIXED_LEN_BYTE_ARRAY => _schemaElement.TypeLength ?? throw new InvalidOperationException("FIXED_LEN_BYTE_ARRAY column without a length"),
+            Meta.Type.BYTE_ARRAY => -1,   // length-prefixed
+            _ => throw new NotSupportedException($"bloom filters are not defined for {_schemaElement.Type} columns ('{_schemaElement.Name}')"),
+        };
+        using MemoryStream ms = _rmsMgr.GetStream();
+        ParquetPlainEncoder.Encode(values, ms, _schemaElement, null);
+        ReadOnlySpan<byte> plain = ms.GetBuffer().AsSpan(0, (int)ms.Length);
+        var hashes = new HashSet<ulong>();
+        for(int i = 0; i < plain.Length;) {
+            int length = width;
+            if(length < 0) {
+                length = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(plain.Slice(i));
+                i += sizeof(int);
+            }
+            hashes.Add(Data.BloomFilter.Hash(plain.Slice(i, length)));
+            i += length;
+        }
+        var filter = new Data.BloomFilter(Data.BloomFilter.OptimalBytes(hashes.Count, fpp));
+        foreach(ulong hash in hashes)
+            filter.InsertHash(hash);
+        return filter;
     }
 
     class ColumnMetrics {
         public int CompressedSize;
         public int UncompressedSize;
         public readonly List<PageHeader> Pages = new();
+        // for the page index (WritePageIndex): each data page's location and statistics (null for a page of nulls)
+        public List<PageLocation>? Locations;
+        public List<(Statistics? Statistics, long NullCount)>? PageStatistics;
 
         public List<Encoding> GetUsedEncodings() {
             var r = new HashSet<Encoding>();
@@ -160,6 +224,11 @@ class DataColumnWriter {
         wc.Pack(_options);
 
         var r = new ColumnMetrics();
+        if(_options.WritePageIndex) {
+            r.Locations = new List<PageLocation>();
+            r.PageStatistics = new List<(Statistics?, long)>();
+        }
+        long firstRow = 0;
 
         /*
          * The page header must precede actual data (compressed or not) however, it contains both
@@ -196,6 +265,17 @@ class DataColumnWriter {
                 : entries;
             using MemoryStream ms = GetPageStream(wc, valueCount);
 
+            long pageOffset = _stream.Position;
+            if(r.PageStatistics != null) {
+                // the page's own bounds and null count, for the column index
+                Data.DataColumnStatistics? pageStats = null;
+                if(valueCount > 0) {
+                    pageStats = new Data.DataColumnStatistics(entries - valueCount, null, null, null);
+                    ParquetPlainEncoder.Encode(wc.Values.Slice(valueStart, valueCount), Stream.Null, tse, pageStats);
+                }
+                r.PageStatistics.Add((pageStats?.ToThriftStatistics(tse), entries - valueCount));
+            }
+
             // data page Num_values also does include NULLs
             PageHeader ph = _footer.CreateDataPage(entries, wc.HasDictionary, deltaEncode, byteSplitStreamEncode, out DataPageHeader dph);
             r.Pages.Add(ph);
@@ -231,6 +311,10 @@ class DataColumnWriter {
             // a page's statistics are the chunk's only when it is the chunk's one page
             dph.Statistics = _options.WriteStatistics && !paged ? wc.Statistics.ToThriftStatistics(tse) : null;
             await CompressAndWriteAsync(ph, ms, r, cancellationToken);
+
+            // where the page is (its header and data) and its first row, for the offset index
+            r.Locations?.Add(new PageLocation { Offset = pageOffset, CompressedPageSize = checked((int)(_stream.Position - pageOffset)), FirstRowIndex = firstRow });
+            firstRow += wc.HasRepetitionLevels ? wc.RepetitionLevels.Slice(start, entries).Count(0) : entries;
         }
 
         return r;

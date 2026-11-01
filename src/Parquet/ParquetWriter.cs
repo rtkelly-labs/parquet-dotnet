@@ -145,6 +145,9 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
         if(_footer == null)
             return;
 
+        // page indexes and bloom filters go between the last row group and the footer, which points at them
+        await _footer.WriteIndexesAsync(Stream);
+
         long size;
         if(_encryptor != null) {
             _encryptor.Seal(_footer.Meta);

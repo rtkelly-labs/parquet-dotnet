@@ -108,6 +108,22 @@ public class ParquetOptions {
     public bool WriteStatistics { get; set; } = true;
 
     /// <summary>
+    /// When true, the writer writes a page index for every column chunk (parquet-format PageIndex.md): an offset index
+    /// (where each data page starts, its size and its first row) and, for columns with a defined sort order, a column
+    /// index (each page's minimum, maximum and null count), between the last row group and the footer. Readers such as
+    /// DuckDB, Spark and Trino use it to skip pages. Off by default: it changes the files written.
+    /// </summary>
+    public bool WritePageIndex { get; set; } = false;
+
+    /// <summary>
+    /// Columns to write a split block bloom filter for (parquet-format BloomFilter.md), keyed by column path as in
+    /// <see cref="ColumnEncodingHints"/>, with the false positive probability to size each chunk's filter for (0.01 is
+    /// common). Bloom filters suit high-cardinality columns looked up by equality, which bounds cannot prune; they are
+    /// not defined for BOOLEAN columns. Empty by default.
+    /// </summary>
+    public Dictionary<string, double> BloomFilters { get; } = new();
+
+    /// <summary>
     /// Check the magic bytes at the start of a file as well as at its end (default). Readers over ranged storage turn
     /// this off to save a request for the first four bytes; the footer and its trailing magic are always checked.
     /// </summary>

@@ -27,6 +27,42 @@ public sealed class BloomFilter {
         _bitset = bitset;
     }
 
+    /// <summary>An empty filter of <paramref name="numBytes"/> bytes (a whole number of blocks), for writing.</summary>
+    internal BloomFilter(int numBytes) : this(new byte[numBytes]) { }
+
+    internal ReadOnlySpan<byte> Bitset => _bitset;
+
+    /// <summary>The largest filter written: 128 MiB, as parquet-mr and parquet-cpp cap it.</summary>
+    internal const int MaxBytes = 128 * 1024 * 1024;
+
+    /// <summary>
+    /// The bitset size for <paramref name="distinctValues"/> values at false positive probability <paramref name="fpp"/>
+    /// (parquet-format BloomFilter.md: m = -8 n / ln(1 - p^(1/8)) bits), rounded up to a power of two between one block
+    /// and <see cref="MaxBytes"/>.
+    /// </summary>
+    internal static int OptimalBytes(long distinctValues, double fpp) {
+        if(!(fpp > 0 && fpp < 1))
+            throw new ArgumentOutOfRangeException(nameof(fpp), fpp, "a bloom filter's false positive probability is between 0 and 1");
+        double bits = -8 * distinctValues / Math.Log(1 - Math.Pow(fpp, 1.0 / 8));
+        long bytes = (long)Math.Ceiling(bits / 8);
+        int size = BlockBytes;
+        while(size < bytes && size < MaxBytes)
+            size *= 2;
+        return size;
+    }
+
+    /// <summary>Adds a value, given as its hash (<see cref="Hash"/>): sets its bit in each word of its block.</summary>
+    internal void InsertHash(ulong hash) {
+        ulong blocks = (ulong)(_bitset.Length / BlockBytes);
+        int block = (int)(((hash >> 32) * blocks) >> 32);
+        uint key = (uint)hash;
+        Span<byte> words = _bitset.AsSpan(block * BlockBytes, BlockBytes);
+        for(int i = 0; i < Salt.Length; i++) {
+            Span<byte> word = words.Slice(i * sizeof(uint), sizeof(uint));
+            BinaryPrimitives.WriteUInt32LittleEndian(word, BinaryPrimitives.ReadUInt32LittleEndian(word) | (1U << (int)((key * Salt[i]) >> 27)));
+        }
+    }
+
     /// <summary>The size of the bitset, in bytes.</summary>
     public int SizeInBytes => _bitset.Length;
 
