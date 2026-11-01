@@ -339,11 +339,16 @@ class DefaultCompressor : ICompressor {
             case CompressionMethod.LZ4:
                 return await Lz4Decompress(source, destinationLength);
             case CompressionMethod.Zstd:
-                return await ZstdDecompress(source, destinationLength);
+                try {
+                    return await ZstdDecompress(source, destinationLength);
+                } catch(ZstdSharp.ZstdException e) {
+                    throw new InvalidDataException($"Zstd page data is corrupt: {e.Message}", e);
+                }
             case CompressionMethod.Lz4Raw:
                 return await Lz4Decompress(source, destinationLength);
             default:
-                throw new NotSupportedException($"Compression method {method} is not supported.");
+                // the file names a codec this library does not know
+                throw new ParquetException($"Compression method {method} is not supported.");
         }
 
     }

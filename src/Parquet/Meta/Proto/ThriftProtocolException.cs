@@ -5,9 +5,11 @@ using System.Text;
 namespace Parquet.Meta.Proto;
 
 /// <summary>
-/// Apache thrift protocol related exception
+/// Apache thrift protocol related exception: the file's metadata is corrupt. A <see cref="ParquetException"/>, so
+/// that callers catching that catch corrupt metadata. Metadata cut off by the end of the stream throws
+/// <see cref="System.IO.EndOfStreamException"/> instead, as other short reads do.
 /// </summary>
-public class ThriftProtocolException : Exception {
+public class ThriftProtocolException : ParquetException {
 
     /// <summary>
     /// Initializes a new instance of the ThriftProtocolException class with a specified error message.
