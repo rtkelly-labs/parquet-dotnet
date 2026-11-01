@@ -203,7 +203,11 @@ class DataColumnReader {
         } else {
             pageMemory = MemoryOwner<byte>.Allocate(ph.CompressedPageSize);
             await using Stream src = _inputStream.Sub(_inputStream.Position, ph.CompressedPageSize);
-            await src.CopyToAsync(pageMemory.Memory, cancellationToken);
+            int copied = await src.CopyToAsync(pageMemory.Memory, cancellationToken);
+            if(copied < ph.CompressedPageSize) {
+                pageMemory.Dispose();
+                throw new EndOfStreamException($"column '{_dataField.Path}': page has {copied} bytes, but its header declares {ph.CompressedPageSize}. File is most likely truncated or corrupt.");
+            }
         }
         using MemoryOwner<byte> pageMemoryOwner = pageMemory;
         // v2 pages: repetition then definition levels (RLE, uncompressed, without a length prefix: the lengths are
