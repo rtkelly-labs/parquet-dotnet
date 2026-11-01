@@ -41,7 +41,7 @@ class ThriftCompactProtocolReader {
         int shift = 0;
 
         while(true) {
-            byte b = (byte)_inputStream.ReadByte();
+            byte b = ReadVarIntByte(shift, 35);
             result |= (uint)(b & 0x7f) << shift;
             if((b & 0x80) != 0x80) {
                 break;
@@ -61,7 +61,7 @@ class ThriftCompactProtocolReader {
         int shift = 0;
         ulong result = 0;
         while(true) {
-            byte b = (byte)_inputStream.ReadByte();
+            byte b = ReadVarIntByte(shift, 70);
             result |= (ulong)(b & 0x7f) << shift;
             if((b & 0x80) != 0x80) {
                 break;
@@ -70,6 +70,25 @@ class ThriftCompactProtocolReader {
         }
 
         return result;
+    }
+
+    private byte ReadVarIntByte(int shift, int maxShift) {
+        if(shift >= maxShift) {
+            throw new ThriftProtocolException("Invalid data in Thrift header. File is most likely corrupt (varint is too long).");
+        }
+        int b = _inputStream.ReadByte();
+        if(b < 0) {
+            throw new EndOfStreamException("Unexpected end of stream while reading a Thrift varint. File is most likely truncated or corrupt.");
+        }
+        return (byte)b;
+    }
+
+    private byte ReadHeaderByte() {
+        int b = _inputStream.ReadByte();
+        if(b < 0) {
+            throw new EndOfStreamException("Unexpected end of stream while reading a Thrift field or list header. File is most likely truncated or corrupt.");
+        }
+        return (byte)b;
     }
 
     public bool ReadBool() {
@@ -128,7 +147,7 @@ class ThriftCompactProtocolReader {
     public bool ReadNextField(out short fieldId, out CompactType compactType) {
 
         // Read a field header off the wire.
-        byte header = (byte)_inputStream.ReadByte();
+        byte header = ReadHeaderByte();
 
         // if it's a stop, then we can return immediately, as the struct is over.
         if((CompactType)header == CompactType.Stop) {
@@ -160,7 +179,7 @@ class ThriftCompactProtocolReader {
         true size.
         */
 
-        byte sizeAndType = (byte)_inputStream.ReadByte();
+        byte sizeAndType = ReadHeaderByte();
         int size = (sizeAndType >> 4) & 0x0f;
         if(size == 15) {
             size = (int)ReadVarInt32();

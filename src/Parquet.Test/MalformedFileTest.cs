@@ -32,7 +32,6 @@ namespace Parquet.Test;
 /// it reads cleanly (then remove it from the list); it fails if it starts failing differently. A kind may list
 /// alternatives (a|b: the outcome differs between .NET 8 and 10), or be "any": the outcome depends on the state of the
 /// shared ArrayPool (huge rents may be served from the pool).
-/// Known hangs are not run.
 /// To regenerate the list, run this class with PARQUET_MALFORMED_KNOWN_OUT=&lt;path&gt;: every case that is not clean
 /// is written there.
 /// </para>
@@ -47,7 +46,6 @@ public class MalformedFileTest {
     static string SourceDir([CallerFilePath] string path = "") => Path.GetDirectoryName(path)!;
     static readonly TimeSpan CaseTimeout = TimeSpan.FromSeconds(10);
     const string RecordPath = "docs/changes/0100-malformed-file-tests.md";
-    const string KnownHangReason = "known: timeout (Thrift varint read loops at end of stream) - see docs/changes/0100-malformed-file-tests.md";
 
     readonly ITestOutputHelper _output;
 
@@ -103,10 +101,7 @@ public class MalformedFileTest {
         AllCases.Value.Keys.Where(k => !Known.Value.ContainsKey(k)).Select(k => new object[] { k });
 
     public static IEnumerable<object[]> KnownCases() =>
-        AllCases.Value.Keys.Where(k => Known.Value.TryGetValue(k, out string? kind) && kind != "timeout").Select(k => new object[] { k });
-
-    public static IEnumerable<object[]> KnownHangs() =>
-        AllCases.Value.Keys.Where(k => Known.Value.TryGetValue(k, out string? kind) && kind == "timeout").Select(k => new object[] { k });
+        AllCases.Value.Keys.Where(k => Known.Value.ContainsKey(k)).Select(k => new object[] { k });
 
     [Theory]
     [MemberData(nameof(CleanCases))]
@@ -127,12 +122,6 @@ public class MalformedFileTest {
         }
         string known = Known.Value[id];
         Assert.True(known == "any" || known.Split('|').Contains(o.Kind), $"{id} (seed {Seed}): known as {known}, now {o}.");
-    }
-
-    [Theory]
-    [MemberData(nameof(KnownHangs), Skip = KnownHangReason)]
-    public void Known_hangs(string id) {
-        Assert.Equal("timeout", Run(id).Kind);
     }
 
     [Fact]
