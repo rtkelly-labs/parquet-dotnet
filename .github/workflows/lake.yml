@@ -171,9 +171,13 @@ jobs:
           src/Parquet/bin/Release/net10.0/Lake.Parquet.dll
           src/Parquet/bin/Release/net8.0/Lake.Parquet.dll
 
-      # Upstream's own suite and every change's tests, against the renamed build.
+      # Upstream's own suite and every change's tests, against the renamed build. With 512-bit vectors preferred, so the
+      # AVX-512 paths (.NET leaves Vector512 off by default) run wherever the runner has AVX-512; the suite job runs the
+      # same tests on the default paths.
       - name: Test
         working-directory: ${{ runner.temp }}/lake
+        env:
+          DOTNET_PreferredVectorBitWidth: "512"
         run: >-
           dotnet test src/Parquet.Test/Parquet.Test.csproj --configuration Release --no-build
           -p:CustomBeforeMicrosoftCommonTargets="$LAKE_TARGETS"
