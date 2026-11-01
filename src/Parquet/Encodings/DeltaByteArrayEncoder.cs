@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Buffers;
+using System.IO;
 using Parquet.Extensions;
 
 namespace Parquet.Encodings;
@@ -40,6 +41,8 @@ static class DeltaByteArrayEncoder {
         try {
             // prefix lengths encoded as DELTA_BINARY_PACKED
             int prefixLengthsCount = DeltaBinaryPackedEncoder.Decode(s, prefixLenghs, 0, valueCount, out int consumedBytes);
+            if(consumedBytes > s.Length)
+                throw new InvalidDataException("DELTA_BYTE_ARRAY prefix lengths run past the end of the page");
 
             if(typeof(T) == typeof(ReadOnlyMemory<char>)) {
                 // prefix lengths count bytes, not chars: rebuild each value's UTF-8 bytes, then decode it whole

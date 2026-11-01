@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Buffers;
+using System.IO;
 using System.Text;
 using Parquet.Extensions;
 
@@ -18,6 +19,8 @@ static class DeltaLengthByteArrayEncoder {
         Decoder decoder = System.Text.Encoding.UTF8.GetDecoder();
         int made = 0;
         foreach(int len in lengths) {
+            if(len < 0 || len > s.Length)
+                throw new InvalidDataException($"DELTA_LENGTH_BYTE_ARRAY value of {len} bytes runs past the end of the page");
             Span<byte> elSpan = s.Slice(0, len);
             char[] charBuffer = new char[System.Text.Encoding.UTF8.GetCharCount(elSpan)];
             decoder.GetChars(elSpan, charBuffer, true);
@@ -31,6 +34,8 @@ static class DeltaLengthByteArrayEncoder {
     private static int MakeBytes(Span<byte> s, Span<int> lengths, Span<ReadOnlyMemory<byte>> dest) {
         int made = 0;
         foreach(int len in lengths) {
+            if(len < 0 || len > s.Length)
+                throw new InvalidDataException($"DELTA_LENGTH_BYTE_ARRAY value of {len} bytes runs past the end of the page");
             Span<byte> elSpan = s.Slice(0, len);
             dest[made] = elSpan.ToArray();
             s = s.Slice(len);
@@ -44,12 +49,14 @@ static class DeltaLengthByteArrayEncoder {
         int[] lengths = ArrayPool<int>.Shared.Rent(valueCount);
         try {
             int actualCount = DeltaBinaryPackedEncoder.Decode(s, lengths, 0, valueCount, out int lengthConsumedBytes);
+            if(lengthConsumedBytes > s.Length)
+                throw new InvalidDataException("DELTA_LENGTH_BYTE_ARRAY lengths run past the end of the page");
             s = s.Slice(lengthConsumedBytes);
 
             if(typeof(T) == typeof(ReadOnlyMemory<char>)) {
-                return MakeStrings(s, lengths.AsSpan(0, valueCount), dest.AsSpan<T, ReadOnlyMemory<char>>());
+                return MakeStrings(s, lengths.AsSpan(0, actualCount), dest.AsSpan<T, ReadOnlyMemory<char>>());
             } else if(typeof(T) == typeof(ReadOnlyMemory<byte>)) {
-                return MakeBytes(s, lengths.AsSpan(0, valueCount), dest.AsSpan<T, ReadOnlyMemory<byte>>());
+                return MakeBytes(s, lengths.AsSpan(0, actualCount), dest.AsSpan<T, ReadOnlyMemory<byte>>());
             } else {
                 throw new NotSupportedException($"unsupported type {typeof(T)}, delta length byte arrays only can do strings and byte arrays");
             }

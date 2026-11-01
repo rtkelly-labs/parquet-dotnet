@@ -137,12 +137,28 @@ class DataColumnReader {
         //Dictionary page format: the entries in the dictionary - in dictionary order - using the plain encoding.
         using IMemoryOwner<byte> bytes = await ReadPageDataAsync(ph);
 
+        // the dictionary is sized by its count: each plain-encoded value takes at least its physical width
+        if(ph.DictionaryPageHeader!.NumValues < 0 || ph.DictionaryPageHeader.NumValues * MinPlainBits(_schemaElement!) > bytes.Memory.Length * 8L)
+            throw new ParquetException($"column '{_dataField.Path}': dictionary page of {bytes.Memory.Length} bytes claims {ph.DictionaryPageHeader.NumValues} values, file is corrupt");
+
         // Dictionary should not contain null values
         Span<T> dictionary = rc.AllocateDictionary(ph.DictionaryPageHeader!.NumValues);
 
         ParquetPlainEncoder.Decode(dictionary, ph.DictionaryPageHeader.NumValues,
                _schemaElement!, bytes.Memory.Span, out int dictionaryOffset);
+        // entries not decoded would be whatever the pooled buffer held
+        if(dictionaryOffset != ph.DictionaryPageHeader.NumValues)
+            throw new ParquetException($"column '{_dataField.Path}': dictionary page holds {dictionaryOffset} of the {ph.DictionaryPageHeader.NumValues} values it claims, file is corrupt");
     }
+
+    /// <summary>The fewest bits a PLAIN value of this physical type takes: BOOLEAN one, BYTE_ARRAY its length prefix.</summary>
+    private static long MinPlainBits(SchemaElement se) => se.Type switch {
+        Meta.Type.INT32 or Meta.Type.FLOAT or Meta.Type.BYTE_ARRAY => 32,
+        Meta.Type.INT64 or Meta.Type.DOUBLE => 64,
+        Meta.Type.INT96 => 96,
+        Meta.Type.FIXED_LEN_BYTE_ARRAY => Math.Max(1, (se.TypeLength ?? 0) * 8L),
+        _ => 1
+    };
 
     private long GetFileOffset() =>
         // get the minimum offset, we'll just read pages in sequence as DictionaryPageOffset/Data_page_offset are not reliable
@@ -166,6 +182,7 @@ class DataColumnReader {
         int dataUsed = 0;
         int allValueCount = (int)_thriftColumnChunk.MetaData!.NumValues;
         int pageValueCount = ph.DataPageHeader.NumValues;
+        CheckPageValueCount(pageValueCount, allValueCount, rc);
 
         if(_dataField.MaxRepetitionLevel > 0) {
             int levelsRead = ReadLevels(
@@ -223,6 +240,7 @@ class DataColumnReader {
         if(repLength < 0 || defLength < 0 || (long)repLength + defLength > Math.Min(pageMemory.Length, ph.UncompressedPageSize))
             throw new ParquetException($"column '{_dataField.Path}': level lengths {repLength} and {defLength} do not fit in the page, file is corrupt");
         int dataUsed = repLength + defLength;
+        CheckPageValueCount(ph.DataPageHeaderV2.NumValues, maxValues, rc);
 
         if(_dataField.MaxRepetitionLevel > 0) {
             int levelsRead = ReadLevels(pageMemory.Span.Slice(0, repLength),
@@ -242,6 +260,8 @@ class DataColumnReader {
 
         // values present: NumNulls counts every level below the maximum (empty and null lists too)
         int maxReadCount = ph.DataPageHeaderV2.NumValues - (_dataField.MaxDefinitionLevel > 0 ? nulls : ph.DataPageHeaderV2.NumNulls);
+        if(maxReadCount < 0 || maxReadCount > ph.DataPageHeaderV2.NumValues)
+            throw new ParquetException($"column '{_dataField.Path}': page has {ph.DataPageHeaderV2.NumValues} values and {ph.DataPageHeaderV2.NumNulls} nulls, file is corrupt");
 
         if(ph.DataPageHeaderV2.IsCompressed == false || _thriftColumnChunk.MetaData!.Codec == CompressionCodec.UNCOMPRESSED) {
             ReadColumn(pageMemory.Span.Slice(dataUsed), ph.DataPageHeaderV2.Encoding, maxValues, maxReadCount, rc);
@@ -260,6 +280,12 @@ class DataColumnReader {
             ph.DataPageHeaderV2.Encoding,
             maxValues, maxReadCount,
             rc);
+    }
+
+    /// <summary>A page's values are read into the column's buffers, which hold the column chunk's values.</summary>
+    private void CheckPageValueCount<T>(int pageValueCount, long chunkValueCount, ReadingColumn<T> rc) where T : struct {
+        if(pageValueCount < 0 || pageValueCount > chunkValueCount - rc.ValuesRead)
+            throw new ParquetException($"column '{_dataField.Path}': page has {pageValueCount} values, but only {chunkValueCount - rc.ValuesRead} of the column chunk's {chunkValueCount} are left, file is corrupt");
     }
 
     private int ReadLevels(Span<byte> s, int maxLevel,

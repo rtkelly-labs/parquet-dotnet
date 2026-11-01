@@ -126,11 +126,17 @@ static partial class RleBitpackedHybridEncoder {
 
         int length;
         if(spanLength == null) {
+            if(s.Length < sizeof(int))
+                throw new InvalidDataException($"levels need a 4-byte length, but only {s.Length} bytes are left");
             length = s.ReadInt32(0);
+            if(length < 0 || length > s.Length - sizeof(int))
+                throw new InvalidDataException($"levels of {length} bytes do not fit in the {s.Length - sizeof(int)} bytes left");
             s = s.Slice(sizeof(int), length);
             usedSpanLength = length + sizeof(int);
         } else {
             length = spanLength.Value;
+            if(length < 0 || length > s.Length)
+                throw new InvalidDataException($"levels of {length} bytes do not fit in the {s.Length} bytes left");
             s = s.Slice(0, length);
             usedSpanLength = length;
         }
@@ -181,6 +187,8 @@ static partial class RleBitpackedHybridEncoder {
         if(headerCount == 0)
             return 0; // important not to continue reading as will result in data corruption in data page further
         int count = Math.Min(headerCount, maxItems); // make sure we remain within bounds
+        if(count > dest.Length || byteWidth > data.Length - offset)
+            throw new InvalidDataException($"RLE run of {headerCount} values does not fit in the data or the values");
         int value = ReadIntOnBytes(data.Slice(offset, byteWidth));
         offset += byteWidth;
 
@@ -199,16 +207,28 @@ static partial class RleBitpackedHybridEncoder {
 
         if(numGroups == 0)
             return 0;
+        if(numGroups < 0)
+            throw new InvalidDataException($"bit-packed run header {header} is corrupt");
 
-        int count = Math.Min(dest.Length, numGroups * 8);
+        int count = (int)Math.Min(dest.Length, numGroups * 8L);
         int bytesToRead = (int)Math.Ceiling(bitWidth * count / 8.0);
         bytesToRead = Math.Min(bytesToRead, data.Length - dataOffset);
         Span<byte> rawSpan = data.Slice(dataOffset, bytesToRead);
         dataOffset += bytesToRead;
 
-        for(int valueIndex = 0, byteIndex = 0; valueIndex < count; valueIndex += 8, byteIndex += bitWidth) {
+        if(bitWidth == 0) {
+            // every value is 0; Decode8ValuesLE writes nothing at width 0, which left pooled memory as the values
+            dest.Slice(0, count).Clear();
+            return Math.Min(count, maxItems);
+        }
+        // a short last group decodes what is there, as before; a run missing whole groups is corrupt, or the caller
+        // would count values that were never written
+        int valueIndex = 0;
+        for(int byteIndex = 0; valueIndex < count && byteIndex < rawSpan.Length; valueIndex += 8, byteIndex += bitWidth) {
             unpacked += BitPackedEncoder.Decode8ValuesLE(rawSpan.Slice(byteIndex), dest.Slice(valueIndex), bitWidth);
         }
+        if(valueIndex < count)
+            throw new InvalidDataException($"bit-packed run of {count} values is cut off after {valueIndex} ({rawSpan.Length} bytes left)");
 
         return Math.Min(unpacked, maxItems);
     }

@@ -96,6 +96,10 @@ class ReadingColumn<T> : IDisposable where T : struct {
 
     public void Checkpoint() {
 
+        // without a dictionary the values would be left as the pooled buffer held them
+        if(_dictionaryIndexes != null && _dictionary == null && _dictionaryIndexesOffset > 0)
+            throw new ParquetException($"field '{Field.Path}' has dictionary-encoded values but no dictionary page, file is corrupt");
+
         if(_dictionaryIndexes != null && _dictionary != null) {
             // explode dictionary and indexes into values memory
             int valueCount = _dictionaryIndexesOffset;
@@ -104,6 +108,8 @@ class ReadingColumn<T> : IDisposable where T : struct {
 
             for(int i = 0; i < valueCount; i++) {
                 int index = indexes[i];
+                if((uint)index >= (uint)dictionary.Length)
+                    throw new ParquetException($"dictionary index {index} is outside the dictionary of {dictionary.Length} values for field '{Field.Path}', file is corrupt");
                 _values.Span[_definedDataCount + i] = dictionary[index];
             }
             MarkValuesRead(valueCount);

@@ -76,6 +76,8 @@ static class EncodingExtensions {
         int shift = 0;
 
         while(true) {
+            if(offset >= data.Length)
+                throw new EndOfStreamException("varint runs past the end of the data");
             b = data[offset++];
             result |= ((b & 0x7F) << shift);
             if((b & 0x80) == 0)
