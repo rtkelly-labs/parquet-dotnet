@@ -122,10 +122,10 @@ public class ParquetRowGroupReader : IDisposable {
             throw new ArgumentException($"Repetition levels buffer is required for field '{field.Path}' ({nameof(Field.MaxRepetitionLevel)} = {field.MaxRepetitionLevel})");
 
         if(definitionLevels != null && definitionLevels.Value.Length < numValues)
-            throw new ArgumentException($"Definition levels buffer is too small for field '{field.Path}' (length {definitionLevels.Value.Length} < numValues {RowCount})");
+            throw new ArgumentException($"Definition levels buffer is too small for field '{field.Path}' (length {definitionLevels.Value.Length} < numValues {numValues})");
 
         if(repetitionLevels != null && repetitionLevels.Value.Length < numValues)
-            throw new ArgumentException($"Repetition levels buffer is too small for field '{field.Path}' (length {repetitionLevels.Value.Length} < numValues {RowCount})");
+            throw new ArgumentException($"Repetition levels buffer is too small for field '{field.Path}' (length {repetitionLevels.Value.Length} < numValues {numValues})");
 
         var columnReader = new DataColumnReader(field, _stream,
             columnChunk, ReadColumnStatistics(columnChunk), _footer, _options,
@@ -207,7 +207,9 @@ public class ParquetRowGroupReader : IDisposable {
         // allocate memory for non-nullable values and definition levels, which will be used to reconstruct nullable values
         using IMemoryOwner<T> nonNullMemory = MemoryOwner<T>.Allocate(values.Length);
         // a required column has no definition levels to read, so nothing overwrites what the pool left in the buffer
-        using IMemoryOwner<int> definitionLevels = MemoryOwner<int>.Allocate((int)RowCount,
+        // one level per value slot: a repeated column has more of them than rows
+        int rows = (int)GetColumnMetaData(field).NumValues;
+        using IMemoryOwner<int> definitionLevels = MemoryOwner<int>.Allocate(rows,
             field.MaxDefinitionLevel > 0 ? AllocationMode.Default : AllocationMode.Clear);
 
         // read non-null version of the column along with definition levels
@@ -218,7 +220,6 @@ public class ParquetRowGroupReader : IDisposable {
         Span<T> nonNullSpan = nonNullMemory.Memory.Span;
         Span<int> dlSpan = definitionLevels.Memory.Span;
         int maxDl = field.MaxDefinitionLevel;
-        int rows = (int)RowCount;
         if(dlSpan.Slice(0, rows).Count(maxDl) == rows) {
             // no nulls (counted vectorised): values in order, without a branch and a dependent index per value
             for(int i = 0; i < rows; i++)
@@ -242,9 +243,9 @@ public class ParquetRowGroupReader : IDisposable {
 
         // short path for non-nullable strings for performance reasons
 
-        if(field.IsNullable) {
+        if(field.MaxDefinitionLevel > 0) {
 
-            using IMemoryOwner<int>? definitionlevels = MemoryOwner<int>.Allocate(field.MaxDefinitionLevel > 0 ? (int)RowCount : 0);
+            using IMemoryOwner<int>? definitionlevels = MemoryOwner<int>.Allocate((int)GetColumnMetaData(field).NumValues);
             using IMemoryOwner<ReadOnlyMemory<char>> rawValues = MemoryOwner<ReadOnlyMemory<char>>.Allocate(values.Length);
 
             await ReadRawAsync(field, rawValues.Memory, definitionlevels.Memory, repetitionLevels, cancellationToken);
@@ -254,7 +255,7 @@ public class ParquetRowGroupReader : IDisposable {
             Span<ReadOnlyMemory<char>> valueSpan = rawValues.Memory.Span;
             int vi = 0;
             for(int i = 0; i < dlSpan.Length; i++) {
-                if(dlSpan[i] == 0) {
+                if(dlSpan[i] < field.MaxDefinitionLevel) {
                     values.Span[i] = null;
                 } else {
                     values.Span[i] = new string(valueSpan[vi++].Span);
@@ -283,9 +284,9 @@ public class ParquetRowGroupReader : IDisposable {
 
         // short path for non-nullable strings for performance reasons
 
-        if(field.IsNullable) {
+        if(field.MaxDefinitionLevel > 0) {
 
-            using IMemoryOwner<int>? definitionlevels = MemoryOwner<int>.Allocate(field.MaxDefinitionLevel > 0 ? (int)RowCount : 0);
+            using IMemoryOwner<int>? definitionlevels = MemoryOwner<int>.Allocate((int)GetColumnMetaData(field).NumValues);
             using IMemoryOwner<ReadOnlyMemory<byte>> rawValues = MemoryOwner<ReadOnlyMemory<byte>>.Allocate(values.Length);
 
             await ReadRawAsync(field, rawValues.Memory, definitionlevels.Memory, repetitionLevels, cancellationToken);
@@ -295,7 +296,7 @@ public class ParquetRowGroupReader : IDisposable {
             Span<ReadOnlyMemory<byte>> valueSpan = rawValues.Memory.Span;
             int vi = 0;
             for(int i = 0; i < dlSpan.Length; i++) {
-                if(dlSpan[i] == 0) {
+                if(dlSpan[i] < field.MaxDefinitionLevel) {
                     values.Span[i] = null;
                 } else {
                     values.Span[i] = valueSpan[vi++].ToArray();
