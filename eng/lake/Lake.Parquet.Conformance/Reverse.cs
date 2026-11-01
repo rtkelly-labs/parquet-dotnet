@@ -59,7 +59,13 @@ public static class Reverse {
             bool utc = name.Contains("utc") || name.Contains("legacy") || name.Contains("physical");
             return new Column(kind, PS.PhysicalType.Int64, PS.LogicalType.Timestamp(utc, unit), -1);
         }
+        if(name.StartsWith("timeonly(", StringComparison.Ordinal) || name.StartsWith("timespan(", StringComparison.Ordinal)) {
+            // TIME, adjusted to UTC as TimeDataField writes it by default: INT32 milliseconds, INT64 micro- or nanoseconds
+            PS.TimeUnit unit = name.Contains("nanos") ? PS.TimeUnit.Nanos : name.Contains("micros") ? PS.TimeUnit.Micros : PS.TimeUnit.Millis;
+            return new Column(kind, unit == PS.TimeUnit.Millis ? PS.PhysicalType.Int32 : PS.PhysicalType.Int64, PS.LogicalType.Time(true, unit), -1);
+        }
         return name switch {
+            "float16" => new(kind, PS.PhysicalType.FixedLenByteArray, PS.LogicalType.Float16(), 2),
             "int8" => new(kind, PS.PhysicalType.Int32, PS.LogicalType.Int(8, true), -1),
             "uint8" => new(kind, PS.PhysicalType.Int32, PS.LogicalType.Int(8, false), -1),
             "int16" => new(kind, PS.PhysicalType.Int32, PS.LogicalType.Int(16, true), -1),
