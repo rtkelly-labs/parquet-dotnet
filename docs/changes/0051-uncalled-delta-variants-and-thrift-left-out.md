@@ -22,7 +22,8 @@ did for the big-endian bit-packing kernels:
   writes page indexes or bloom filters (the footer's offsets to them are kept as numbers), and these structures are
   referenced only by one another. The public classes stay, so the API is unchanged; only their internal codecs go.
   When the page index or bloom filters are implemented (Lake.NET's roadmap), their entries leave the manifest in the
-  same change.
+  same change. **Withdrawn:** the page index and bloom filters are being implemented (reading, then writing), so these
+  20 entries left the manifest again before that work; only the 9 delta variants are still left out.
 
 The entries were generated from the source and hashed with `StripMembers.cs --hashes`. A hash that changes or a
 caller that appears fails the Lake build.

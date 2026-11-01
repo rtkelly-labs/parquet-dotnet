@@ -60,6 +60,13 @@ sealed class ColumnDecryptor {
                 ? AesModules.Aad(_fileAad, ModuleType.DictionaryPage, _rowGroup, _column)
                 : AesModules.Aad(_fileAad, ModuleType.DataPage, _rowGroup, _column, page));
 
+    /// <summary>
+    /// Reads and decrypts a whole module at the stream's position: a column or offset index, or a bloom filter's header
+    /// or bitset. These are always AES-GCM, even under AES_GCM_CTR_V1.
+    /// </summary>
+    public byte[] Module(Stream s, ModuleType type) =>
+        AesModules.DecryptGcm(_key, ReadModule(s), AesModules.Aad(_fileAad, type, _rowGroup, _column));
+
     private static byte[] ReadModule(Stream s) {
         byte[] prefix = new byte[AesModules.LengthPrefix];
         s.ReadExactly(prefix);

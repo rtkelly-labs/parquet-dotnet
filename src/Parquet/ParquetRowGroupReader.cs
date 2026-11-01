@@ -12,6 +12,7 @@ using Parquet.Encodings;
 using Parquet.Extensions;
 using Parquet.File;
 using Parquet.Meta;
+using Parquet.Meta.Proto;
 using Parquet.Schema;
 using SType = System.Type;
 
@@ -397,6 +398,78 @@ public class ParquetRowGroupReader : IDisposable {
     public DataColumnStatistics? GetStatistics(DataField field) {
         ColumnChunk cc = GetMetadata(field) ?? throw new ParquetException($"'{field.Path}' does not exist in this file");
         return ReadColumnStatistics(cc);
+    }
+
+    /// <summary>
+    /// The column's column index, from the file's page index: each data page's minimum and maximum (in the column's
+    /// physical type, PLAIN-encoded), whether it holds only nulls, and its null count. Null when the file has none
+    /// for this column.
+    /// </summary>
+    public async Task<ColumnIndex?> ReadColumnIndexAsync(DataField field, CancellationToken cancellationToken = default) {
+        ColumnChunk cc = GetMetadata(field) ?? throw new ParquetException($"'{field.Path}' does not exist in this file");
+        if(cc.ColumnIndexOffset is not long offset || cc.ColumnIndexLength is not int length)
+            return null;
+        using var ms = new MemoryStream(await ReadIndexModuleAsync(cc, offset, length, Encryption.ModuleType.ColumnIndex));
+        return ColumnIndex.Read(new ThriftCompactProtocolReader(ms));
+    }
+
+    /// <summary>
+    /// The column's offset index, from the file's page index: where each data page starts in the file, its size and the
+    /// index of its first row. Null when the file has none for this column.
+    /// </summary>
+    public async Task<OffsetIndex?> ReadOffsetIndexAsync(DataField field, CancellationToken cancellationToken = default) {
+        ColumnChunk cc = GetMetadata(field) ?? throw new ParquetException($"'{field.Path}' does not exist in this file");
+        if(cc.OffsetIndexOffset is not long offset || cc.OffsetIndexLength is not int length)
+            return null;
+        using var ms = new MemoryStream(await ReadIndexModuleAsync(cc, offset, length, Encryption.ModuleType.OffsetIndex));
+        return OffsetIndex.Read(new ThriftCompactProtocolReader(ms));
+    }
+
+    /// <summary>
+    /// The column chunk's split block bloom filter, which says whether a value may be in the chunk. Null when the file
+    /// has none for this column.
+    /// </summary>
+    public async Task<BloomFilter?> ReadBloomFilterAsync(DataField field, CancellationToken cancellationToken = default) {
+        ColumnChunk cc = GetMetadata(field) ?? throw new ParquetException($"'{field.Path}' does not exist in this file");
+        if(cc.MetaData?.BloomFilterOffset is not long offset)
+            return null;
+        Encryption.ColumnDecryptor? decryptor = _decryptor?.ForColumn(cc, _ordinal, _rowGroup.Columns.IndexOf(cc));
+        _stream.Seek(offset, SeekOrigin.Begin);
+        BloomFilterHeader header;
+        byte[] bitset;
+        if(decryptor != null) {
+            using(var hs = new MemoryStream(decryptor.Module(_stream, Encryption.ModuleType.BloomFilterHeader)))
+                header = BloomFilterHeader.Read(new ThriftCompactProtocolReader(hs));
+            bitset = decryptor.Module(_stream, Encryption.ModuleType.BloomFilterBitset);
+        } else if(cc.MetaData.BloomFilterLength is int length) {
+            // header and bitset together (bloom_filter_length, which newer writers set)
+            using var ms = new MemoryStream(await _stream.ReadBytesExactlyAsync(length));
+            header = BloomFilterHeader.Read(new ThriftCompactProtocolReader(ms));
+            bitset = new byte[header.NumBytes < 0 || header.NumBytes > length ? throw new ParquetException($"bloom filter of '{field.Path}' claims {header.NumBytes} bytes in {length}") : header.NumBytes];
+            ms.ReadExactly(bitset);
+        } else {
+            header = BloomFilterHeader.Read(new ThriftCompactProtocolReader(_stream));
+            bitset = header.NumBytes < 0 || header.NumBytes > _stream.Length - _stream.Position
+                ? throw new ParquetException($"bloom filter of '{field.Path}' claims {header.NumBytes} bytes")
+                : await _stream.ReadBytesExactlyAsync(header.NumBytes);
+        }
+        if(header.Algorithm.BLOCK == null || header.Hash.XXHASH == null || header.Compression.UNCOMPRESSED == null)
+            throw new NotSupportedException($"bloom filter of '{field.Path}': only split block filters hashed with xxHash64, uncompressed, are defined");
+        if(bitset.Length != header.NumBytes || bitset.Length == 0 || bitset.Length % BloomFilter.BlockBytes != 0)
+            throw new ParquetException($"bloom filter of '{field.Path}' is {bitset.Length} bytes, not a whole number of {BloomFilter.BlockBytes}-byte blocks");
+        return new BloomFilter(bitset);
+    }
+
+    private async Task<byte[]> ReadIndexModuleAsync(ColumnChunk cc, long offset, int length, Encryption.ModuleType type) {
+        if(offset < 0 || length <= 0 || offset > _stream.Length - length)
+            throw new ParquetException($"{type} of '{string.Join(".", cc.MetaData?.PathInSchema ?? [])}' lies outside the file (offset {offset}, length {length})");
+        _stream.Seek(offset, SeekOrigin.Begin);
+        byte[] data = await _stream.ReadBytesExactlyAsync(length);
+        Encryption.ColumnDecryptor? decryptor = _decryptor?.ForColumn(cc, _ordinal, _rowGroup.Columns.IndexOf(cc));
+        if(decryptor == null)
+            return data;
+        using var ms = new MemoryStream(data);
+        return decryptor.Module(ms, type);
     }
 
     /// <summary>
