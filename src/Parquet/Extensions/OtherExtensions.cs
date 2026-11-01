@@ -35,8 +35,12 @@ static class OtherExtensions {
     }
 
     public static long ToUnixNanoseconds(this DateTime dto) {
-        long nanoseconds = dto.Ticks * TimeSpan.NanosecondsPerTick;
-        return nanoseconds - UnixEpochNanoseconds;
+        // a signed 64-bit count of nanoseconds reaches 1677-09-21 .. 2262-04-11: beyond that it would wrap to another date
+        long ticks = dto.Ticks - UnixEpoch.Ticks;
+        if(ticks > long.MaxValue / TimeSpan.NanosecondsPerTick || ticks < long.MinValue / TimeSpan.NanosecondsPerTick)
+            throw new ArgumentOutOfRangeException(nameof(dto), dto,
+                "a TIMESTAMP in nanoseconds holds 1677-09-21 00:12:43 to 2262-04-11 23:47:16 UTC; write this value in microseconds or milliseconds");
+        return ticks * TimeSpan.NanosecondsPerTick;
     }
 #endif
 
