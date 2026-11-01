@@ -62,7 +62,7 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
     public ParquetRowGroupWriter CreateRowGroup() {
         _dataWritten = true;
 
-        var writer = new ParquetRowGroupWriter(Stream, _footer!, _options, _encryptor, _openedWriters.Count);
+        var writer = new ParquetRowGroupWriter(Stream, _footer!, _options, _encryptor, _openedWriters.Count) { Schema = _schema };
 
         _openedWriters.Add(writer);
 

@@ -52,6 +52,36 @@ public class ParquetRowGroupWriter : IDisposable {
 
     internal long? RowCount { get; private set; }
 
+    /// <summary>The schema, for checking that sibling nested leaves agree (Lake.NET decision 11).</summary>
+    internal ParquetSchema? Schema { get; init; }
+
+    // the first leaf written under each group ancestor, with its layout
+    private Dictionary<Field, (DataField Leaf, NestedLayout Layout)>? _nested;
+
+    /// <summary>
+    /// A nested leaf's levels must describe the same lists, maps and nulls as the leaves already written under the
+    /// ancestors it shares with them: a map's keys and values the same pairs, a struct's fields the same nulls. Nothing
+    /// else would catch a write that disagrees, and the file would be corrupt.
+    /// </summary>
+    private void CheckSiblings<T>(DataField field, WritingColumn<T> wc) where T : struct {
+        if(Schema == null || field.Path.Length < 2)
+            return;
+        NestedLayout layout = NestedLayout.FromLevels(Schema, field,
+            wc.HasDefinitionLevels ? wc.DefinitionLevels : default, wc.HasRepetitionLevels ? wc.RepetitionLevels : default, wc.NumValues);
+        _nested ??= new Dictionary<Field, (DataField, NestedLayout)>();
+        var checkedAgainst = new HashSet<DataField>();
+        foreach(Field group in layout.Groups) {
+            if(!_nested.TryGetValue(group, out (DataField Leaf, NestedLayout Layout) first)) {
+                _nested[group] = (field, layout);
+                continue;
+            }
+            if(!checkedAgainst.Add(first.Leaf))
+                continue;
+            if(layout.DisagreesWith(first.Layout) is string where)
+                throw new ParquetException($"column '{field.Path}' does not agree with '{first.Leaf.Path}' on {where}: their levels describe different rows");
+        }
+    }
+
     #region [ Helper methods ]
 
     /// <summary>
@@ -235,6 +265,8 @@ public class ParquetRowGroupWriter : IDisposable {
                     "All columns in a row group must have the same number of rows.");
             }
         }
+
+        CheckSiblings(field, wc);
 
         ColumnChunk chunk = await writer.WriteAsync(path, wc, cancellationToken);
         _thriftRowGroup.Columns.Add(chunk);
