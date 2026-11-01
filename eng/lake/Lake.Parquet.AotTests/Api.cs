@@ -54,6 +54,7 @@ static class Api {
         await SingleValueDictionaryAsync();
         await AppendWithAnotherSchemaAsync();
         await GeometryStatisticsAsync();
+        await PageIndexAndBloomFiltersAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -711,6 +712,39 @@ static class Api {
             await rowGroup.ReadAsync(reader.Schema.GetDataFields()[0], new Memory<byte[]?>(points));
             Check(points.Select((p, i) => p != null && p.Length == 21 && BitConverter.ToDouble(p, 5) == i && BitConverter.ToDouble(p, 13) == -i).All(ok => ok),
                 $"{what}: WKB points");
+        }
+    }
+
+    /// <summary>
+    /// The page index and bloom filters of the parquet-cpp file (lake_metadata_features.parquet): every page located
+    /// and bounded, every value of the filtered columns in their bloom filters, absent ones mostly not.
+    /// </summary>
+    static async Task PageIndexAndBloomFiltersAsync() {
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(Resource("lake_metadata_features.parquet")));
+        DataField[] f = reader.Schema.GetDataFields();
+        DataField id = f.Single(x => x.Name == "id"), s = f.Single(x => x.Name == "s");
+        for(int g = 0; g < reader.RowGroupCount; g++) {
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(g);
+            int n = (int)rowGroup.RowCount;
+            PMeta.OffsetIndex? offsets = await rowGroup.ReadOffsetIndexAsync(id);
+            PMeta.ColumnIndex? index = await rowGroup.ReadColumnIndexAsync(id);
+            long?[] ids = await ReadNullableAsync<long>(rowGroup, id, n);
+            bool pages = offsets != null && index != null && offsets.PageLocations.Count == index.MinValues.Count && offsets.PageLocations.Count > 1
+                && offsets.PageLocations.Select((p, i) => {
+                    int to = i + 1 < offsets.PageLocations.Count ? (int)offsets.PageLocations[i + 1].FirstRowIndex : n;
+                    long?[] page = ids[(int)p.FirstRowIndex..to];
+                    return BitConverter.ToInt64(index.MinValues[i]) == page.Min() && BitConverter.ToInt64(index.MaxValues[i]) == page.Max();
+                }).All(ok => ok);
+            Check(pages, $"page index, row group {g}: {offsets?.PageLocations.Count} pages, bounds as the data");
+
+            BloomFilter? idFilter = await rowGroup.ReadBloomFilterAsync(id);
+            BloomFilter? sFilter = await rowGroup.ReadBloomFilterAsync(s);
+            var strings = new string?[n];
+            await rowGroup.ReadAsync(s, new Memory<string?>(strings));
+            Check(idFilter != null && sFilter != null && ids.All(v => idFilter.MightContain(v!.Value)) && strings.All(v => sFilter.MightContain(v!)),
+                $"bloom filters, row group {g}: every value present");
+            int falsePositives = Enumerable.Range(0, 1000).Count(i => idFilter!.MightContain(1_000_000L + i) || sFilter!.MightContain($"absent-{i}"));
+            Check(falsePositives < 100, $"bloom filters, row group {g}: {falsePositives} of 1000 absent values reported present");
         }
     }
 
