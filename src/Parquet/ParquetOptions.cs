@@ -116,6 +116,14 @@ public class ParquetOptions {
     public bool RoundDecimalsToScale { get; set; } = false;
 
     /// <summary>
+    /// When true, a TIMESTAMP column that is not UTC-adjusted holds a wall-clock time, as the format means: a
+    /// <see cref="DateTime"/> is written as it reads, whatever its <see cref="DateTime.Kind"/>, and reads back with
+    /// <see cref="DateTimeKind.Unspecified"/>. Off by default, as upstream: a <see cref="DateTimeKind.Local"/> value is
+    /// converted to UTC first, and values read back as <see cref="DateTimeKind.Local"/>.
+    /// </summary>
+    public bool UnadjustedTimestampsAsWallClock { get; set; } = false;
+
+    /// <summary>
     /// Write min/max/null-count statistics in column chunk metadata and data page headers (the default). Files whose
     /// statistics are never used for pruning (position delete files, for instance) can leave them out.
     /// </summary>

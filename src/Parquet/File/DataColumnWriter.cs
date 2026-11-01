@@ -47,6 +47,9 @@ class DataColumnWriter {
         CancellationToken cancellationToken) where T : struct {
         if(typeof(T) == typeof(decimal) && !_options.RoundDecimalsToScale)
             CheckDecimalScale(wc.Values.AsSpan<T, decimal>());
+        using WritingColumn<T>? wallClock = typeof(T) == typeof(DateTime) && IsWallClock(_schemaElement, _options) ? AsWallClock(wc) : null;
+        if(wallClock != null)
+            wc = wallClock;
         // Num_values in the chunk does include null values - I have validated this by dumping spark-generated file.
         ColumnChunk chunk = _footer.CreateColumnChunk(
             _options.CompressionMethod, _stream, _schemaElement.Type!.Value, fullPath, wc.NumValues,
@@ -155,6 +158,24 @@ class DataColumnWriter {
             }
             return r.ToList();
         }
+    }
+
+    internal static bool IsWallClock(SchemaElement se, ParquetOptions? options) =>
+        options is { UnadjustedTimestampsAsWallClock: true } && se.LogicalType?.TIMESTAMP is { IsAdjustedToUTC: false };
+
+    /// <summary>
+    /// The column's values as wall-clock times (<see cref="ParquetOptions.UnadjustedTimestampsAsWallClock"/>): each
+    /// value's ticks as they are, marked UTC so that the encoders, statistics, page index and bloom filter take them
+    /// without converting.
+    /// </summary>
+    private static WritingColumn<T> AsWallClock<T>(WritingColumn<T> wc) where T : struct {
+        ReadOnlySpan<DateTime> source = wc.Values.AsSpan<T, DateTime>();
+        var wall = new DateTime[source.Length];
+        for(int i = 0; i < source.Length; i++)
+            wall[i] = DateTime.SpecifyKind(source[i], DateTimeKind.Utc);
+        return WritingColumn<T>.NewWritingColumn(wc.Field, (T[])(object)wall,
+            wc.HasDefinitionLevels ? new ReadOnlyMemory<int>(wc.DefinitionLevels.ToArray()) : (ReadOnlyMemory<int>?)null,
+            wc.HasRepetitionLevels ? new ReadOnlyMemory<int>(wc.RepetitionLevels.ToArray()) : (ReadOnlyMemory<int>?)null);
     }
 
     /// <summary>
