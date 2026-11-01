@@ -1,0 +1,344 @@
+{
+ "rows": 7,
+ "leaves": {
+  "ll/list/element/list/element": {
+   "offsets": [
+    [
+     0,
+     2,
+     2,
+     2,
+     4,
+     5,
+     7,
+     8
+    ],
+    [
+     0,
+     2,
+     3,
+     4,
+     4,
+     5,
+     5,
+     8,
+     8
+    ]
+   ],
+   "validity": [
+    {
+     "layer": 0,
+     "valid": [
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true
+     ]
+    },
+    {
+     "layer": 1,
+     "valid": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true
+     ]
+    },
+    {
+     "layer": 2,
+     "valid": [
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true
+     ]
+    }
+   ],
+   "values": 7
+  },
+  "mp/key_value/key": {
+   "offsets": [
+    [
+     0,
+     2,
+     2,
+     2,
+     3,
+     4,
+     6,
+     6
+    ]
+   ],
+   "validity": [
+    {
+     "layer": 0,
+     "valid": [
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false
+     ]
+    }
+   ],
+   "values": 6
+  },
+  "mp/key_value/value/list/element": {
+   "offsets": [
+    [
+     0,
+     2,
+     2,
+     2,
+     3,
+     4,
+     6,
+     6
+    ],
+    [
+     0,
+     2,
+     2,
+     2,
+     3,
+     4,
+     6
+    ]
+   ],
+   "validity": [
+    {
+     "layer": 0,
+     "valid": [
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false
+     ]
+    },
+    {
+     "layer": 1,
+     "valid": [
+      true,
+      true,
+      false,
+      true,
+      true,
+      true
+     ]
+    },
+    {
+     "layer": 2,
+     "valid": [
+      true,
+      false,
+      true,
+      true,
+      true,
+      true
+     ]
+    }
+   ],
+   "values": 5
+  },
+  "ls/list/element/a": {
+   "offsets": [
+    [
+     0,
+     3,
+     3,
+     3,
+     4,
+     5,
+     6,
+     7
+    ]
+   ],
+   "validity": [
+    {
+     "layer": 0,
+     "valid": [
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+     ]
+    },
+    {
+     "layer": 1,
+     "valid": [
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true
+     ]
+    },
+    {
+     "layer": 1,
+     "valid": [
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+     ]
+    }
+   ],
+   "values": 4
+  },
+  "ls/list/element/b/list/element": {
+   "offsets": [
+    [
+     0,
+     3,
+     3,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     1,
+     4,
+     4,
+     5
+    ]
+   ],
+   "validity": [
+    {
+     "layer": 0,
+     "valid": [
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+     ]
+    },
+    {
+     "layer": 1,
+     "valid": [
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true
+     ]
+    },
+    {
+     "layer": 1,
+     "valid": [
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+     ]
+    },
+    {
+     "layer": 2,
+     "valid": [
+      true,
+      true,
+      false,
+      true,
+      true
+     ]
+    }
+   ],
+   "values": 4
+  },
+  "st/p/q": {
+   "offsets": [],
+   "validity": [
+    {
+     "layer": 0,
+     "valid": [
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true
+     ]
+    },
+    {
+     "layer": 0,
+     "valid": [
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+     ]
+    },
+    {
+     "layer": 0,
+     "valid": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true
+     ]
+    }
+   ],
+   "values": 3
+  },
+  "req/list/element": {
+   "offsets": [
+    [
+     0,
+     1,
+     3,
+     3,
+     4,
+     5,
+     8,
+     9
+    ]
+   ],
+   "validity": [],
+   "values": 9
+  }
+ }
+}

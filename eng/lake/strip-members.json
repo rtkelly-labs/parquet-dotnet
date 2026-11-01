@@ -263,5 +263,7 @@
   {"file": "src/Parquet/Extensions/ThriftExtensions.cs", "type": "ThriftExtensions", "member": "IsAnnotatedWithAny", "parameters": "SchemaElement, ConvertedType[]?", "sha256": "08b6bdde190d8964"},
   {"file": "src/Parquet/Extensions/OtherExtensions.cs", "type": "OtherExtensions", "member": "AddPath", "parameters": "string, string[]", "sha256": "405d091a276d9db9"},
   {"file": "src/Parquet/Encodings/DeltaBinaryPackedEncoder.cs", "type": "DeltaBinaryPackedEncoder", "member": "CanEncodeULongArray", "parameters": "ulong[], int, int", "sha256": "bdad8e92148426f4"},
-  {"file": "src/Parquet/Data/RawColumnData.cs", "type": "RawColumnData", "member": "ValuesMemory", "parameters": "", "sha256": "f19f0d42045e1323"}
+  {"file": "src/Parquet/Data/RawColumnData.cs", "type": "RawColumnData", "member": "ValuesMemory", "parameters": "", "sha256": "f19f0d42045e1323"},
+  {"file": "src/Parquet/ParquetRowGroupReader.cs", "type": "ParquetRowGroupReader", "member": "ReadRawColumnDataAsync", "parameters": "DataField, CancellationToken", "sha256": "bc089da1c7436006"},
+  {"file": "src/Parquet/Encodings/StatsCompute.cs", "type": "StatsCompute", "member": "Compute", "parameters": "ReadOnlySpan<string>, DataColumnStatistics?", "sha256": "eee76eeb96ac89b8"}
 ]

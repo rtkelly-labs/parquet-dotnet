@@ -6,6 +6,7 @@
 | `lake_decimal_38_9.parquet` | written for this suite with pyarrow 26: decimal128(38,9), values that fit `decimal` and one beyond it | parquet-cpp |
 | `lake_unknown_footer_fields.parquet` | a pyarrow 26 file whose footer gets unknown fields of every Thrift compact type, by `make_unknown_fields.py`; pyarrow reads it | parquet-cpp |
 | `byte_array_decimal.parquet` | upstream's `src/Parquet.Test/data/byte_array_decimal.parquet`, unchanged: DECIMAL(4,2) on BYTE_ARRAY | HVR 5.3.0 |
+| `lake_nested_layout.parquet` | `src/Parquet.Test/data/nested/nested_layout.parquet`: lists of lists, a map of lists, a list of structs holding lists, nested structs (pyarrow 26) | parquet-cpp |
 | `int96_timestamp_order.parquet`, `floating_orders_nan_count.parquet` | apache/parquet-testing `data/` (Apache License 2.0), unchanged | parquet-mr |
 | `shredded_variant_case_001.parquet` | apache/parquet-testing `shredded_variant/case-001.parquet` (Apache License 2.0), unchanged | parquet-mr |
 | `geography_points.parquet` | apache/parquet-testing `data/geospatial/geography-points.parquet` (Apache License 2.0), unchanged | DataFusion |
