@@ -56,6 +56,7 @@ static class Api {
         await GeometryStatisticsAsync();
         await PageIndexAndBloomFiltersAsync();
         await PageIndexAndBloomFiltersWrittenAsync();
+        await FooterStructuresFromOtherWritersAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -433,7 +434,7 @@ static class Api {
 
     /// <summary>
     /// Every logical type a column can be declared with (RawDataField), written and read back with its annotation:
-    /// ENUM, JSON, BSON, FLOAT16, GEOMETRY, GEOGRAPHY, TIME, UNKNOWN (always null).
+    /// ENUM, JSON, BSON, FLOAT16, GEOMETRY, GEOGRAPHY, TIME, UNKNOWN (always null) and Iceberg v4's FILE.
     /// </summary>
     static async Task LogicalTypesAsync() {
         var fields = new (RawDataField Field, string What)[] {
@@ -445,6 +446,7 @@ static class Api {
             (new RawDataField("geog", PMeta.Type.BYTE_ARRAY, false, new PMeta.LogicalType { GEOGRAPHY = new PMeta.GeographyType { Crs = "OGC:CRS84", Algorithm = PMeta.EdgeInterpolationAlgorithm.SPHERICAL } }), "GEOGRAPHY"),
             (new RawDataField("time", PMeta.Type.INT64, false, new PMeta.LogicalType { TIME = new PMeta.TimeType { IsAdjustedToUTC = true, Unit = new PMeta.TimeUnit { MICROS = new PMeta.MicroSeconds() } } }), "TIME"),
             (new RawDataField("unknown", PMeta.Type.INT32, true, new PMeta.LogicalType { UNKNOWN = new PMeta.NullType() }), "UNKNOWN"),
+            (new RawDataField("file", PMeta.Type.BYTE_ARRAY, false, new PMeta.LogicalType { FILE = new PMeta.FileType() }), "FILE"),
         };
         byte[] wkbPoint = [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         byte[] file = await WriteAsync(new ParquetSchema(fields.Select(f => (Field)f.Field).ToArray()), new ParquetOptions(), async rg => {
@@ -456,6 +458,7 @@ static class Api {
             await rg.WriteAsync(fields[5].Field, new byte[]?[] { wkbPoint, wkbPoint });
             await rg.WriteAsync<long>(fields[6].Field, new long[] { 0, 86_399_999_999 });
             await rg.WriteAsync<int>(fields[7].Field, new int?[] { null, null });
+            await rg.WriteAsync(fields[8].Field, new byte[]?[] { [1], [2] });
         });
         await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
         for(int i = 0; i < fields.Length; i++) {
@@ -464,7 +467,7 @@ static class Api {
                 "ENUM" => lt?.ENUM != null, "JSON" => lt?.JSON != null, "BSON" => lt?.BSON != null, "FLOAT16" => lt?.FLOAT16 != null,
                 "GEOMETRY" => lt?.GEOMETRY?.Crs == "OGC:CRS84",
                 "GEOGRAPHY" => lt?.GEOGRAPHY is { Crs: "OGC:CRS84", Algorithm: PMeta.EdgeInterpolationAlgorithm.SPHERICAL },
-                "TIME" => lt?.TIME?.Unit?.MICROS != null, "UNKNOWN" => lt?.UNKNOWN != null, _ => false
+                "TIME" => lt?.TIME?.Unit?.MICROS != null, "UNKNOWN" => lt?.UNKNOWN != null, "FILE" => lt?.FILE != null, _ => false
             };
             Check(kept, $"logical type {fields[i].What} written and read back");
         }
@@ -775,6 +778,36 @@ static class Api {
         Check(idFilter != null && keyFilter != null && ids.All(v => idFilter.MightContain(v)) && keys.All(v => keyFilter.MightContain(v!))
             && Enumerable.Range(0, 1000).Count(i => idFilter.MightContain(i * 7L + 3) || keyFilter.MightContain($"x{i}")) < 60,
             "bloom filters written: every value present, few false positives");
+    }
+
+    /// <summary>
+    /// Footer structures the library never writes itself, from files other writers wrote (apache/parquet-testing): the
+    /// IEEE 754 total order and INT96 timestamp column orders, a VARIANT group and a GEOGRAPHY column. Each is read,
+    /// then the footer is rewritten by an empty append, and each must still be there.
+    /// </summary>
+    static async Task FooterStructuresFromOtherWritersAsync() {
+        foreach((string file, Func<PMeta.FileMetaData, bool> has, string what) in new (string, Func<PMeta.FileMetaData, bool>, string)[] {
+            ("floating_orders_nan_count.parquet", m => m.ColumnOrders!.Any(o => o.IEEE_754TOTALORDER != null) && m.ColumnOrders!.Any(o => o.TYPEORDER != null), "IEEE 754 total order"),
+            ("int96_timestamp_order.parquet", m => m.ColumnOrders!.Any(o => o.INT96TIMESTAMPORDER != null), "INT96 timestamp order"),
+            ("shredded_variant_case_001.parquet", m => m.Schema.Any(se => se.LogicalType?.VARIANT != null), "VARIANT"),
+            ("geography_points.parquet", m => m.Schema.Any(se => se.LogicalType?.GEOGRAPHY?.Algorithm == PMeta.EdgeInterpolationAlgorithm.SPHERICAL), "GEOGRAPHY (spherical)"),
+        }) {
+            byte[] original = Resource(file);
+            ParquetSchema schema;
+            long rows;
+            await using(ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(original))) {
+                Check(has(reader.Metadata!), $"{what}: read from {file}");
+                schema = reader.Schema;
+                rows = reader.Metadata!.NumRows;
+            }
+            using var appended = new MemoryStream();
+            appended.Write(original);
+            await using(ParquetWriter writer = await ParquetWriter.CreateAsync(schema, appended, append: true)) {
+            }
+            await using(ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(appended.ToArray()))) {
+                Check(has(reader.Metadata!) && reader.Metadata!.NumRows == rows, $"{what}: kept when the footer is rewritten");
+            }
+        }
     }
 
     sealed class ForwardOnlyStream(Stream inner) : Stream {
