@@ -113,8 +113,8 @@ class WritingColumn<T> : IDisposable where T : struct {
         _definitionLevelsOwner = definitionLevelsOwner;
         _repetitionLevels = repetitionLevels;
 
-        if(field.IsArray && _definitionLevels == null) {
-            // special use case for legacy arrays
+        if((field.IsArray || field.MaxDefinitionLevel > 0) && _definitionLevels == null) {
+            // legacy arrays, and values with no nulls under optional parents: every value is present
             _definitionLevelsOwner = MemoryOwner<int>.Allocate(numValues);
             _definitionLevels = _definitionLevelsOwner.Memory;
             // fill all levels with MaxDefinitionLevel quickly
