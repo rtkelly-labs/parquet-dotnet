@@ -115,7 +115,7 @@ static partial class RleBitpackedHybridEncoder {
         r[consumed++] = (byte)value;
         r[consumed++] = (byte)((value >> 8) & 0xFF);
         r[consumed++] = (byte)((value >> 16) & 0x00FF);
-        r[consumed++] = (byte)((value >> 32) & 0x0000FF);
+        r[consumed++] = (byte)((value >> 24) & 0x0000FF);
     }
 
     public static int Decode(Span<byte> s,
