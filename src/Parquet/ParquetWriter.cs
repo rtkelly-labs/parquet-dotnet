@@ -18,6 +18,7 @@ namespace Parquet;
 /// </summary>
 public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
     private ThriftFooter? _footer;
+    private bool _footerWritten;
     private readonly ParquetSchema _schema;
     private readonly ParquetOptions _options;
     private bool _dataWritten;
@@ -142,8 +143,9 @@ public sealed class ParquetWriter : ParquetActor, IAsyncDisposable {
     public async ValueTask DisposeAsync() {
         DisposeCore();
 
-        if(_footer == null)
+        if(_footer == null || _footerWritten)
             return;
+        _footerWritten = true;     // a second dispose writes nothing more
 
         // page indexes and bloom filters go between the last row group and the footer, which points at them
         await _footer.WriteIndexesAsync(Stream);
