@@ -59,6 +59,7 @@ static class Api {
         await FooterStructuresFromOtherWritersAsync();
         await NestedTypedColumnsAsync();
         await DecimalExactOrRefusedAsync();
+        await WriteRangesAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -909,6 +910,46 @@ static class Api {
             using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
             BigDecimal[] read = await ReadAsync<BigDecimal>(rowGroup, reader.Schema.GetDataFields()[0], 1);
             Check(read[0].UnscaledValue == value.UnscaledValue, "decimal(38,9) with 38 digits: exact as BigDecimal");
+        }
+    }
+
+    /// <summary>
+    /// What a write refuses rather than changing (lake(0064), lake(0065)), and the default DECIMAL a bare
+    /// DataField&lt;decimal&gt; writes: FIXED_LEN_BYTE_ARRAY(16), DECIMAL(38, 18).
+    /// </summary>
+    static async Task WriteRangesAsync() {
+        var nanos = new DateTimeDataField("t", DateTimeFormat.Timestamp, unit: DateTimeTimeUnit.Nanos);
+        try {
+            await WriteAsync(new ParquetSchema(nanos), new ParquetOptions(), rg => rg.WriteAsync<DateTime>(nanos, new[] { new DateTime(1600, 1, 1, 0, 0, 0, DateTimeKind.Utc) }));
+            Check(false, "TIMESTAMP(NANOS) of 1600-01-01: written");
+        } catch(ArgumentOutOfRangeException) {
+            Check(true, "TIMESTAMP(NANOS) of 1600-01-01: refused");
+        }
+        DateTime edge = new(2262, 4, 11, 23, 47, 16, DateTimeKind.Utc);
+        byte[] edgeFile = await WriteAsync(new ParquetSchema(nanos), new ParquetOptions(), rg => rg.WriteAsync<DateTime>(nanos, new[] { edge }));
+        await using(ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(edgeFile))) {
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            Check((await ReadAsync<DateTime>(rowGroup, reader.Schema.GetDataFields()[0], 1))[0] == edge, "TIMESTAMP(NANOS) of its last second round-trips");
+        }
+
+        foreach((int precision, int scale, decimal value) in new[] { (5, 2, 12345.6m), (12, 2, 12345678901m), (20, 2, 1e18m) }) {
+            var field = new DecimalDataField("d", precision, scale);
+            try {
+                await WriteAsync(new ParquetSchema(field), new ParquetOptions(), rg => rg.WriteAsync<decimal>(field, new[] { value }));
+                Check(false, $"decimal({precision},{scale}) of {value}: written");
+            } catch(ParquetException) {
+                Check(true, $"decimal({precision},{scale}) of {value}: refused");
+            }
+        }
+
+        var bare = new DataField<decimal>("d");
+        byte[] file = await WriteAsync(new ParquetSchema(bare), new ParquetOptions(), rg => rg.WriteAsync<decimal>(bare, new[] { 1.5m, -79228162514.264337593543950335m }));
+        await using(ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file))) {
+            PMeta.SchemaElement se = reader.Metadata!.Schema[1];
+            Check(se.Type == PMeta.Type.FIXED_LEN_BYTE_ARRAY && se.TypeLength == 16 && se.LogicalType?.DECIMAL is { Precision: 38, Scale: 18 },
+                $"bare DataField<decimal>: {se.Type}({se.TypeLength}) DECIMAL({se.LogicalType?.DECIMAL?.Precision},{se.LogicalType?.DECIMAL?.Scale})");
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            Check(SequenceEqual(await ReadAsync<decimal>(rowGroup, reader.Schema.GetDataFields()[0], 2), new[] { 1.5m, -79228162514.264337593543950335m }), "bare DataField<decimal>: values");
         }
     }
 
