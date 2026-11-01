@@ -469,10 +469,86 @@ jobs:
 
   # The single required check. Jobs that do not run for an event (verify outside staging) are skipped,
   # which counts as passing; anything that ran must have succeeded.
+  # The package's line coverage (Lake.NET decision 6, testing.md "Coverage"): the native AOT suite's modes on its JIT
+  # build and the xunit suite, both against the package as it ships (stripped, renamed), merged. Below 99% fails.
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DOTNET_PreferredVectorBitWidth: "512"   # the AVX-512 paths run where the runner has AVX-512
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.10"
+
+      - name: Install tools
+        run: |
+          pip install pyarrow pandas
+          dotnet tool install --global dotnet-coverage
+
+      - name: Strip and rename a copy to Lake.Parquet
+        run: |
+          set -euo pipefail
+          lake="$RUNNER_TEMP/lake"
+          git worktree add --quiet --detach "$lake" HEAD
+          dotnet run eng/lake/StripMembers.cs -- "$lake" eng/lake/strip-members.json
+          dotnet run eng/lake/RenameNamespace.cs -- "$lake/src" Parquet Lake.Parquet
+          dotnet run eng/lake/RenameNamespace.cs -- "$lake/eng/lake" Parquet Lake.Parquet
+
+      - name: The native suite's modes, on its JIT build
+        working-directory: ${{ runner.temp }}/lake/eng/lake/Lake.Parquet.AotTests
+        env:
+          ParquetProject: ${{ runner.temp }}/lake/src/Parquet/Parquet.csproj
+        run: |
+          set -euo pipefail
+          targets="$GITHUB_WORKSPACE/eng/lake/Lake.Parquet.targets"
+          dotnet build -c Release -p:CustomBeforeMicrosoftCommonTargets="$targets" -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$targets"
+          dotnet-coverage instrument bin/Release/net10.0/Lake.Parquet.dll
+          files="$RUNNER_TEMP/coverage-files"
+          cat > "$RUNNER_TEMP/modes.sh" <<SH
+          set -e
+          dotnet bin/Release/net10.0/Lake.Parquet.AotTests.dll api
+          dotnet bin/Release/net10.0/Lake.Parquet.AotTests.dll cases 1 3000
+          dotnet bin/Release/net10.0/Lake.Parquet.AotTests.dll write 1 1000 "$files"
+          dotnet bin/Release/net10.0/Lake.Parquet.AotTests.dll read 1 1000 "$files"
+          dotnet bin/Release/net10.0/Lake.Parquet.AotTests.dll hashes 1 1000 > /dev/null
+          dotnet bin/Release/net10.0/Lake.Parquet.AotTests.dll corpus "$RUNNER_TEMP/lake/src/Parquet.Test/data" > /dev/null
+          SH
+          dotnet-coverage collect --output "$RUNNER_TEMP/aot.xml" --output-format cobertura "bash $RUNNER_TEMP/modes.sh"
+
+      - name: The xunit suite
+        working-directory: ${{ runner.temp }}/lake
+        run: |
+          set -euo pipefail
+          targets="$GITHUB_WORKSPACE/eng/lake/Lake.Parquet.targets"
+          hooks="-p:CustomBeforeMicrosoftCommonTargets=$targets -p:CustomBeforeMicrosoftCommonCrossTargetingTargets=$targets"
+          dotnet build src/Parquet.Test/Parquet.Test.csproj -c Release -f net10.0 $hooks
+          dotnet-coverage instrument src/Parquet.Test/bin/Release/net10.0/Lake.Parquet.dll
+          dotnet-coverage collect --output "$RUNNER_TEMP/tests.xml" --output-format cobertura \
+            "dotnet test src/Parquet.Test/Parquet.Test.csproj -c Release -f net10.0 --no-build $hooks"
+
+      - name: At least 99% of the package's lines
+        run: python3 eng/lake/coverage.py --min 99 "$RUNNER_TEMP/aot.xml" "$RUNNER_TEMP/tests.xml"
+
   lake-ci:
     name: lake-ci
     if: always()
-    needs: [stack, build, suite, aot, conformance, changes, verify]
+    needs: [stack, build, suite, aot, conformance, coverage, changes, verify]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job that ran
@@ -483,7 +559,7 @@ jobs:
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           failed=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")')
           [ -z "$failed" ] || { echo "::error::did not succeed: $failed"; exit 1; }
-          for required in stack build suite aot conformance; do
+          for required in stack build suite aot conformance coverage; do
             [ "$(echo "$RESULTS" | jq -r ".$required.result")" = "success" ] || { echo "::error::$required did not succeed"; exit 1; }
           done
 
