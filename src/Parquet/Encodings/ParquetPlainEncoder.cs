@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Buffers;
+using System.Buffers.Binary;
 using System.IO;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -118,6 +119,11 @@ static class ParquetPlainEncoder {
             if(encode)
                 Encode(span, destination);
             StatsCompute.Compute(span, stats);
+        } else if(t == typeof(Half)) {
+            ReadOnlySpan<Half> span = sourceSpan.AsSpan<T, Half>();
+            if(encode)
+                Encode(span, destination);
+            StatsCompute.Compute(span, stats);
         } else if(t == typeof(DateTime)) {
             ReadOnlySpan<DateTime> span = sourceSpan.AsSpan<T, DateTime>();
             if(encode)
@@ -227,6 +233,9 @@ static class ParquetPlainEncoder {
         } else if(t == typeof(float)) {
             Span<float> span = dest.AsSpan<T, float>();
             elementsRead = Decode(source, span.Slice(0, count));
+        } else if(t == typeof(Half)) {
+            Span<Half> span = dest.AsSpan<T, Half>();
+            elementsRead = Decode(source, span.Slice(0, count));
         } else if(t == typeof(DateTime)) {
             Span<DateTime> span = dest.AsSpan<T, DateTime>();
             elementsRead = Decode(source, span.Slice(0, count), tse);
@@ -306,6 +315,9 @@ static class ParquetPlainEncoder {
         } else if(t == typeof(float)) {
             result = BitConverter.GetBytes((float)value);
             return true;
+        } else if(t == typeof(Half)) {
+            result = BitConverter.GetBytes((Half)value);
+            return true;
         } else if(t == typeof(byte[])) {
             result = (byte[])value;
             return true;
@@ -348,6 +360,14 @@ static class ParquetPlainEncoder {
             result = TryDecodeDecimal(value, tse);
             return true;
         }
+        if(options is { TimeMapping: not TimeMapping.Integer } && (tse.LogicalType?.TIME != null
+            || tse.ConvertedType is ConvertedType.TIME_MILLIS or ConvertedType.TIME_MICROS)) {
+            long ticks = tse.Type == TType.INT32
+                ? BitConverter.ToInt32(value, 0) * TimeSpan.TicksPerMillisecond
+                : Time64ToTicks(BitConverter.ToInt64(value, 0), tse);
+            result = options.TimeMapping == TimeMapping.TimeOnly ? new TimeOnly(ticks) : new TimeSpan(ticks);
+            return true;
+        }
         if(tse.Type == TType.INT32) {
             int i = BitConverter.ToInt32(value, 0);
             // narrower and unsigned integers as the column's CLR type (see SchemaEncoder.GetSystemType)
@@ -387,7 +407,10 @@ static class ParquetPlainEncoder {
                 result = value;
                 return true;
             }
-        else if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY && tse.LogicalType?.UUID != null && value.Length == 16) {
+        else if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY && tse.LogicalType?.FLOAT16 != null && value.Length == 2) {
+            result = BitConverter.ToHalf(value, 0);
+            return true;
+        } else if(tse.Type == TType.FIXED_LEN_BYTE_ARRAY && tse.LogicalType?.UUID != null && value.Length == 16) {
             result = new Guid(value, bigEndian: true);  // the RFC 4122 bytes, as the values are written
             return true;
         }
@@ -476,8 +499,7 @@ static class ParquetPlainEncoder {
                 result = BitConverter.GetBytes(ms);
                 return true;
             case TType.INT64:
-                long micros = value.Ticks / 10;
-                result = BitConverter.GetBytes(micros);
+                result = BitConverter.GetBytes(TicksToTime64(value.Ticks, tse));
                 return true;
             default:
                 throw new InvalidDataException($"data type '{tse.Type}' does not represent any time types");
@@ -516,14 +538,14 @@ static class ParquetPlainEncoder {
     }
 
     private static bool TryEncode(TimeSpan value, SchemaElement tse, out byte[] result) {
+        CheckTimeOfDay(value);
         switch(tse.Type) {
             case TType.INT32:
-                int ms = (int)value.TotalMilliseconds;
+                int ms = (int)(value.Ticks / TimeSpan.TicksPerMillisecond);
                 result = BitConverter.GetBytes(ms);
                 return true;
             case TType.INT64:
-                long micros = value.Ticks / 10;
-                result = BitConverter.GetBytes(micros);
+                result = BitConverter.GetBytes(TicksToTime64(value.Ticks, tse));
                 return true;
             default:
                 throw new InvalidDataException($"data type '{tse.Type}' does not represent any date types");
@@ -1228,6 +1250,37 @@ static class ParquetPlainEncoder {
             w.Write(days);
         }
     }
+    // TIME stored as INT64 is in microseconds, or nanoseconds when the column's unit says so; .NET ticks are 100 ns
+    private static bool IsNanos(SchemaElement tse) => tse.LogicalType?.TIME?.Unit.NANOS != null;
+
+    private static long TicksToTime64(long ticks, SchemaElement tse) =>
+        IsNanos(tse) ? checked(ticks * TimeSpan.NanosecondsPerTick) : ticks / TimeSpan.TicksPerMicrosecond;
+
+    private static long Time64ToTicks(long value, SchemaElement tse) =>
+        IsNanos(tse) ? value / TimeSpan.NanosecondsPerTick : checked(value * TimeSpan.TicksPerMicrosecond);
+
+    /// <summary>TIME holds a time of day: a TimeSpan written to it is from midnight, under 24 hours.</summary>
+    private static void CheckTimeOfDay(TimeSpan value) {
+        if(value < TimeSpan.Zero || value >= TimeSpan.FromDays(1))
+            throw new ArgumentOutOfRangeException(nameof(value), value, "a TIME column holds a time of day, from 00:00 to under 24:00");
+    }
+
+    // FLOAT16: FIXED_LEN_BYTE_ARRAY(2), the IEEE 754 half's bits, little-endian
+    public static void Encode(ReadOnlySpan<Half> data, Stream destination) {
+        Span<byte> bytes = stackalloc byte[sizeof(ushort)];
+        foreach(Half value in data) {
+            BinaryPrimitives.WriteHalfLittleEndian(bytes, value);
+            destination.Write(bytes);
+        }
+    }
+
+    public static int Decode(Span<byte> source, Span<Half> data) {
+        int count = Math.Min(data.Length, source.Length / sizeof(ushort));
+        for(int i = 0; i < count; i++)
+            data[i] = BinaryPrimitives.ReadHalfLittleEndian(source.Slice(i * sizeof(ushort)));
+        return count;
+    }
+
     public static void Encode(ReadOnlySpan<TimeOnly> data, Stream destination, SchemaElement tse) {
         using var w = new ValueWriter(destination);
         switch(tse.Type) {
@@ -1238,10 +1291,8 @@ static class ParquetPlainEncoder {
                 }
                 break;
             case TType.INT64:
-                foreach(TimeOnly element in data) {
-                    long ticks = element.Ticks / 10;
-                    w.Write(ticks);
-                }
+                foreach(TimeOnly element in data)
+                    w.Write(TicksToTime64(element.Ticks, tse));
                 break;
         }
     }
@@ -1344,7 +1395,7 @@ static class ParquetPlainEncoder {
                     while(srcPos + sizeof(long) <= source.Length && i < data.Length) {
                         long lv = source.ReadInt64(srcPos);
                         srcPos += sizeof(long);
-                        data[i++] = new TimeOnly(lv * 10);
+                        data[i++] = new TimeOnly(Time64ToTicks(lv, tse));
                     }
                     return i;
                 }
@@ -1358,14 +1409,14 @@ static class ParquetPlainEncoder {
         switch(tse.Type) {
             case TType.INT32:
                 foreach(TimeSpan ts in data) {
-                    int ms = (int)ts.TotalMilliseconds;
-                    w.Write(ms);
+                    CheckTimeOfDay(ts);
+                    w.Write((int)(ts.Ticks / TimeSpan.TicksPerMillisecond));
                 }
                 break;
             case TType.INT64:
                 foreach(TimeSpan ts in data) {
-                    long micros = ts.Ticks / 10;
-                    w.Write(micros);
+                    CheckTimeOfDay(ts);
+                    w.Write(TicksToTime64(ts.Ticks, tse));
                 }
                 break;
             default:
@@ -1391,7 +1442,7 @@ static class ParquetPlainEncoder {
                     while(srcPos + sizeof(long) <= source.Length && i < data.Length) {
                         long lv = source.ReadInt64(srcPos);
                         srcPos += sizeof(long);
-                        data[i++] = new TimeSpan(lv * 10);
+                        data[i++] = new TimeSpan(Time64ToTicks(lv, tse));
                     }
                     return i;
                 }

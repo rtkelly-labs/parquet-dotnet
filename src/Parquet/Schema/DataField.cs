@@ -23,6 +23,7 @@ public class DataField : Field, ICloneable {
         typeof(long), typeof(ulong),
         typeof(float),
         typeof(double),
+        typeof(Half),
         typeof(decimal),
         typeof(BigDecimal),
         typeof(BigInteger),
@@ -100,7 +101,9 @@ public class DataField : Field, ICloneable {
 
         Discover(clrType, out Type baseType, out bool discIsArray, out bool discIsNullable);
         ClrType = baseType;
-        if(!CanCreateFrom(ClrType)) {
+        // a TIME column as TimeOnly or TimeSpan is declared with TimeDataField, which gives the unit
+        bool time = this is TimeDataField && (ClrType == typeof(TimeOnly) || ClrType == typeof(TimeSpan));
+        if(!time && !CanCreateFrom(ClrType)) {
             if(baseType == typeof(DateTimeOffset)) {
                 throw new NotSupportedException($"{nameof(DateTimeOffset)} support was dropped due to numerous ambiguity issues, please use {nameof(DateTime)} from now on.");
             }
@@ -108,7 +111,7 @@ public class DataField : Field, ICloneable {
             throw new NotSupportedException($"type {clrType} is not supported");
         }
 
-        if(_alternativeToPhysicalType.TryGetValue(ClrType, out Type? physicalType)) {
+        if(!time && _alternativeToPhysicalType.TryGetValue(ClrType, out Type? physicalType)) {
             ClrType = physicalType;
         }
 
