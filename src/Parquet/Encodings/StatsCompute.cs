@@ -15,6 +15,12 @@ static class StatsCompute {
             return;
         }
 
+        // a chunk of nulls only has no bounds: zeros would claim the column holds 0
+        if(data.IsEmpty) {
+            stats.MinValue = stats.MaxValue = null;
+            return;
+        }
+
         MinMax<T>(data, out T min, out T max);
         stats.MinValue = min;
         stats.MaxValue = max;
