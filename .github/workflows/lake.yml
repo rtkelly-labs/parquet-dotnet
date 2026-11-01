@@ -221,11 +221,11 @@ jobs:
   # and AOT warning an error, then checked against the same suite on the JIT, on Linux and Windows. macOS (arm64)
   # runners are expensive, so that leg runs only on a pull request labelled macos or a run dispatched with macos.
   aot:
-    name: aot (${{ matrix.rid }})
+    name: aot (${{ matrix.rid }}${{ matrix.isa && format(' {0}', matrix.isa) || '' }})
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(((github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'macos')) || inputs.macos) && '[{"os":"ubuntu-latest","rid":"linux-x64"},{"os":"windows-latest","rid":"win-x64"},{"os":"macos-latest","rid":"osx-arm64"}]' || '[{"os":"ubuntu-latest","rid":"linux-x64"},{"os":"windows-latest","rid":"win-x64"}]') }}
+        include: ${{ fromJSON(((github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'macos')) || inputs.macos) && '[{"os":"ubuntu-latest","rid":"linux-x64"},{"os":"windows-latest","rid":"win-x64"},{"os":"ubuntu-latest","rid":"linux-x64","isa":"x86-64-v3"},{"os":"ubuntu-24.04-arm","rid":"linux-arm64"},{"os":"macos-latest","rid":"osx-arm64"}]' || '[{"os":"ubuntu-latest","rid":"linux-x64"},{"os":"windows-latest","rid":"win-x64"},{"os":"ubuntu-latest","rid":"linux-x64","isa":"x86-64-v3"},{"os":"ubuntu-24.04-arm","rid":"linux-arm64"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:
@@ -265,7 +265,11 @@ jobs:
           targets="$GITHUB_WORKSPACE/eng/lake/Lake.Parquet.targets"
           hooks=(-p:CustomBeforeMicrosoftCommonTargets="$targets" -p:CustomBeforeMicrosoftCommonCrossTargetingTargets="$targets")
           dotnet build -c Release "${hooks[@]}"
-          dotnet publish -c Release -r ${{ matrix.rid }} -o "$RUNNER_TEMP/aot" "${hooks[@]}"
+          # native AOT's default x64 instruction set has 128-bit vectors only; the x86-64-v3 leg compiles AVX2 in, so
+          # the 256-bit paths run natively too, and the Arm64 leg runs Arm's
+          isa=()
+          [ -n "${{ matrix.isa }}" ] && isa=(-p:IlcInstructionSet=${{ matrix.isa }})
+          dotnet publish -c Release -r ${{ matrix.rid }} -o "$RUNNER_TEMP/aot" "${hooks[@]}" "${isa[@]}"
 
       - name: Run the suite natively, and against the JIT
         working-directory: ${{ runner.temp }}/lake/eng/lake/Lake.Parquet.AotTests
