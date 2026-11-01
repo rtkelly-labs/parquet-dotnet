@@ -62,6 +62,7 @@ static class Api {
         await WriteRangesAsync();
         await UnknownFooterFieldsAsync();
         await RareLayoutsAsync();
+        await NestedLayoutAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -1023,6 +1024,53 @@ static class Api {
             Check(stats is { NullCount: 3, MinValue: null, MaxValue: null } && (await ReadNullableAsync<T>(rowGroup, read, 3)).All(v => v == null),
                 $"{typeof(T).Name} of nulls only: values and statistics without bounds");
         }
+    }
+
+    /// <summary>
+    /// NestedLayout (lake(0079)) on pyarrow's file of deep nesting: every leaf's levels give a layout whose levels are
+    /// the file's again, and a list of lists of nullable ints assembles from offsets and packed values alone.
+    /// </summary>
+    static async Task NestedLayoutAsync() {
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(Resource("lake_nested_layout.parquet")));
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        foreach(DataField field in reader.Schema.GetDataFields()) {
+            int entries = (int)rowGroup.GetMetadata(field)!.MetaData!.NumValues;
+            int[] def = new int[entries], rep = new int[entries];
+            Memory<int>? defs = field.MaxDefinitionLevel > 0 ? new Memory<int>(def) : (Memory<int>?)null;
+            Memory<int>? reps = field.MaxRepetitionLevel > 0 ? new Memory<int>(rep) : (Memory<int>?)null;
+            if(field.ClrType == typeof(int))
+                await rowGroup.ReadRawAsync<int>(field, new int[entries], defs, reps);
+            else if(field.ClrType == typeof(long))
+                await rowGroup.ReadRawAsync<long>(field, new long[entries], defs, reps);
+            else
+                await rowGroup.ReadRawAsync<ReadOnlyMemory<char>>(field, new ReadOnlyMemory<char>[entries], defs, reps);
+            NestedLayout layout = NestedLayout.FromLevels(reader.Schema, field, def, rep, entries);
+            (int[] d, int[] r) = layout.ToLevels(reader.Schema, field);
+            Check(layout.SlotCounts[0] == 7 && (field.MaxDefinitionLevel == 0 || SequenceEqual(d, def)) && (field.MaxRepetitionLevel == 0 || SequenceEqual(r, rep)),
+                $"nested layout of {field.Path}: levels round-trip");
+        }
+
+        DataField ll = reader.Schema.GetDataFields()[0];
+        int n = (int)rowGroup.GetMetadata(ll)!.MetaData!.NumValues;
+        int[] packed = new int[n], lldef = new int[n], llrep = new int[n];
+        await rowGroup.ReadRawAsync<int>(ll, packed, lldef, llrep);
+        NestedLayout l = NestedLayout.FromLevels(reader.Schema, ll, lldef, llrep, n);
+        var rows = new List<string>();
+        int next = 0;
+        for(int row = 0; row < l.SlotCounts[0]; row++) {
+            if(!l.Validity[0].IsValid[row]) { rows.Add("null"); continue; }
+            var outer = new List<string>();
+            for(int i = l.Offsets[0][row]; i < l.Offsets[0][row + 1]; i++) {
+                if(!l.Validity[1].IsValid[i]) { outer.Add("null"); continue; }
+                var inner = new List<string>();
+                for(int j = l.Offsets[1][i]; j < l.Offsets[1][i + 1]; j++)
+                    inner.Add(l.Validity[2].IsValid[j] ? packed[next++].ToString(System.Globalization.CultureInfo.InvariantCulture) : "null");
+                outer.Add("[" + string.Join(",", inner) + "]");
+            }
+            rows.Add("[" + string.Join(",", outer) + "]");
+        }
+        Check(string.Join(" ", rows) == "[[1,2],[3]] [] null [[null],[]] [[4]] [null,[5,6,7]] [[]]" && next == l.ValueCount,
+            $"nested layout: a list of lists assembles from offsets ({string.Join(" ", rows)})");
     }
 
     static async Task<T[]> ReadAsync<T>(ParquetRowGroupReader rowGroup, DataField field, int n) where T : struct {
