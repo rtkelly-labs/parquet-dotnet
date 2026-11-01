@@ -86,10 +86,11 @@ static class ByteStreamSplitEncoder {
             throw new ArgumentException("Source span is too small.", nameof(s));
         }
 
-        // For 4-byte types (int, float), use Vector256 or Vector128 for parallel deinterleaving
-        if(k == 4 && Vector256.IsHardwareAccelerated && typeof(T) == typeof(float)) {
+        // floats and doubles: an unrolled scalar deinterleave, eight or four values a block (it uses no vector
+        // instructions, so every instruction set takes it: native AOT's default and Arm64 included)
+        if(k == 4 && typeof(T) == typeof(float)) {
             DecodeX_Float256(s, dest);
-        } else if(k == 8 && Vector256.IsHardwareAccelerated && typeof(T) == typeof(double)) {
+        } else if(k == 8 && typeof(T) == typeof(double)) {
             DecodeX_Double256(s, dest);
         } else {
             // Fallback to CPU version for unsupported configurations

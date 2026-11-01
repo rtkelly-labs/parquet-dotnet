@@ -656,8 +656,45 @@ static class ParquetPlainEncoder {
             if(n != 0) {
                 destination.WriteByte(b);
             }
+        } else if(Vector128.IsHardwareAccelerated && data.Length > Vector128<byte>.Count) {
+            EncodeVector128(data, destination);
         } else {
             EncodeOnCpu(data, destination);
+        }
+    }
+
+    /// <summary>
+    /// Booleans to PLAIN bits sixteen at a time with 128-bit vectors: what native AOT's default instruction set and
+    /// Arm64 (whose vectors are 128 bits) accelerate. The bits go to one buffer and the stream once.
+    /// </summary>
+    internal static void EncodeVector128(ReadOnlySpan<bool> data, Stream destination) {
+        ReadOnlySpan<byte> boolBytes = MemoryMarshal.AsBytes(data);
+        int targetLength = (data.Length + 7) / 8;
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(targetLength);
+        try {
+            ref byte current = ref MemoryMarshal.GetReference(boolBytes);
+            int fullVectors = boolBytes.Length / Vector128<byte>.Count;
+            for(int i = 0; i < fullVectors; i++) {
+                Vector128<byte> isFalse = Vector128.Equals(Vector128.LoadUnsafe(ref current), Vector128<byte>.Zero);
+                ushort bits = (ushort)~isFalse.ExtractMostSignificantBits();
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(i * 2), bits);
+                current = ref Unsafe.Add(ref current, Vector128<byte>.Count);
+            }
+            int ib = fullVectors * 2, n = 0;
+            byte b = 0;
+            for(int i = fullVectors * Vector128<byte>.Count; i < boolBytes.Length; i++) {
+                b |= (byte)((data[i] ? 1 : 0) << n);
+                if(++n == 8) {
+                    buffer[ib++] = b;
+                    n = 0;
+                    b = 0;
+                }
+            }
+            if(n != 0)
+                buffer[ib] = b;
+            destination.Write(buffer, 0, targetLength);
+        } finally {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
