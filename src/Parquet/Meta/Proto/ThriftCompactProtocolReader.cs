@@ -193,24 +193,44 @@ class ThriftCompactProtocolReader {
                 // Don't try to decode the string, just skip it.
                 ReadBinary();
                 break;
-            //case TType.Uuid:
-            //    await protocol.ReadUuidAsync(cancellationToken);
-            //    break;
+            case CompactType.Uuid:
+                _inputStream.Seek(16, SeekOrigin.Current);
+                break;
             case CompactType.Struct:
+                // each field's value is skipped too, or the next field header is read from the middle of a value
                 StructBegin();
-                while(ReadNextField(out _, out _)) {
-
+                while(ReadNextField(out _, out CompactType fieldType)) {
+                    SkipField(fieldType);
                 }
                 StructEnd();
                 break;
             case CompactType.List:
+            case CompactType.Set:
                 int elementCount = ReadListHeader(out CompactType elementType);
                 for(int i = 0; i < elementCount; i++) {
-                    SkipField(elementType);
+                    SkipElement(elementType);
+                }
+                break;
+            case CompactType.Map:
+                int pairCount = (int)ReadVarInt32();
+                if(pairCount > 0) {
+                    byte keyAndValue = (byte)_inputStream.ReadByte();
+                    for(int i = 0; i < pairCount; i++) {
+                        SkipElement((CompactType)(keyAndValue >> 4));
+                        SkipElement((CompactType)(keyAndValue & 0x0f));
+                    }
                 }
                 break;
             default:
                 throw new ThriftProtocolException($"Invalid data in Thrift header. File is most likely corrupt (unexpected data type {compactType}).");
         }
+    }
+
+    /// <summary>A list, set or map element: a boolean there is a byte of its own, not part of a field header.</summary>
+    private void SkipElement(CompactType elementType) {
+        if(elementType is CompactType.BooleanTrue or CompactType.BooleanFalse)
+            _inputStream.ReadByte();
+        else
+            SkipField(elementType);
     }
 }

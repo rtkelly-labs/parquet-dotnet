@@ -60,6 +60,7 @@ static class Api {
         await NestedTypedColumnsAsync();
         await DecimalExactOrRefusedAsync();
         await WriteRangesAsync();
+        await UnknownFooterFieldsAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -950,6 +951,24 @@ static class Api {
                 $"bare DataField<decimal>: {se.Type}({se.TypeLength}) DECIMAL({se.LogicalType?.DECIMAL?.Precision},{se.LogicalType?.DECIMAL?.Scale})");
             using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
             Check(SequenceEqual(await ReadAsync<decimal>(rowGroup, reader.Schema.GetDataFields()[0], 2), new[] { 1.5m, -79228162514.264337593543950335m }), "bare DataField<decimal>: values");
+        }
+    }
+
+    /// <summary>
+    /// A footer with fields the library does not know, of every Thrift compact type, nested structs, sets and maps
+    /// among them (lake(0067)), reads as pyarrow reads it: as a writer on a newer parquet-format would leave it.
+    /// </summary>
+    static async Task UnknownFooterFieldsAsync() {
+        try {
+            await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(Resource("lake_unknown_footer_fields.parquet")));
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            DataField[] f = reader.Schema.GetDataFields();
+            var s = new string?[3];
+            await rowGroup.ReadAsync(f[1], new Memory<string?>(s));
+            Check(SequenceEqual(await ReadNullableAsync<long>(rowGroup, f[0], 3), new long?[] { 1, 2, 3 }) && SequenceEqual(s, new[] { "a", null, "c" }),
+                "footer with unknown fields of every type: values");
+        } catch(Exception e) {
+            Check(false, $"footer with unknown fields of every type: {e.GetType().Name}: {e.Message}");
         }
     }
 
