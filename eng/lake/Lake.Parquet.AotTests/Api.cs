@@ -57,6 +57,8 @@ static class Api {
         await PageIndexAndBloomFiltersAsync();
         await PageIndexAndBloomFiltersWrittenAsync();
         await FooterStructuresFromOtherWritersAsync();
+        await NestedTypedColumnsAsync();
+        await DecimalExactOrRefusedAsync();
         foreach(string problem in Problems) {
             Console.WriteLine("- " + problem);
         }
@@ -821,6 +823,93 @@ static class Api {
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => inner.Write(buffer, offset, count);
+    }
+
+    /// <summary>
+    /// Columns in optional structs and lists through the typed API (lake(0062)): values without nulls under an optional
+    /// struct, a list of nullable ints with its repetition levels, and lists of strings and byte arrays with a null
+    /// element and a missing list, null below the maximum definition level.
+    /// </summary>
+    static async Task NestedTypedColumnsAsync() {
+        var a = new DataField<long>("a");
+        var s = new DataField("s", typeof(string), isNullable: false);
+        var x = new DataField<int?>("x");
+        var ls = new DataField<string>("s");
+        var lb = new DataField<byte[]>("b");
+        var schema = new ParquetSchema(new StructField("st", a, s), new ListField("l", x), new ListField("ls", ls), new ListField("lb", lb));
+        // rows: [1, null, 3], [], [4], [5]
+        int?[] xs = [1, null, 3, null, 4, 5];
+        int[] xr = [0, 1, 1, 0, 0, 0];
+        // rows: ["a", null], null, ["b"], ["c"]
+        string?[] strings = ["a", null, null, "b", "c"];
+        byte[]?[] bytes = [[1], null, null, [2, 3], []];
+        int[] sr = [0, 1, 0, 0, 0];
+        byte[] file = await WriteAsync(schema, new ParquetOptions(), async rg => {
+            await rg.WriteAsync<long>(a, new long[] { 7, 8, 9, 10 });
+            await rg.WriteAsync(s, new[] { "w", "x", "y", "z" });
+            await rg.WriteAsync<int>(x, xs, xr);
+            await rg.WriteAsync(ls, strings, sr);
+            await rg.WriteAsync(lb, bytes, sr);
+        });
+
+        await using ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file));
+        using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+        DataField[] f = reader.Schema.GetDataFields();
+        Check(rowGroup.RowCount == 4, $"nested: row count {rowGroup.RowCount}");
+        Check(SequenceEqual(await ReadNullableAsync<long>(rowGroup, f[0], 4), new long?[] { 7, 8, 9, 10 }), "nested: long under an optional struct");
+        var readS = new string?[4];
+        await rowGroup.ReadAsync(f[1], new Memory<string?>(readS));
+        Check(SequenceEqual(readS, new[] { "w", "x", "y", "z" }), "nested: required string under an optional struct");
+        var readX = new int?[6];
+        int[] readXr = new int[6];
+        await rowGroup.ReadAsync<int>(f[2], new Memory<int?>(readX), readXr);
+        Check(SequenceEqual(readX, xs) && SequenceEqual(readXr, xr), "nested: list of int? with repetition levels");
+        var readLs = new string?[5];
+        int[] readLsr = new int[5];
+        await rowGroup.ReadAsync(f[3], new Memory<string?>(readLs), readLsr);
+        Check(SequenceEqual(readLs, strings) && SequenceEqual(readLsr, sr), "nested: list of strings, null element and null list");
+        var readLb = new byte[]?[5];
+        int[] readLbr = new int[5];
+        await rowGroup.ReadAsync(f[4], new Memory<byte[]?>(readLb), readLbr);
+        Check(readLb.Zip(bytes).All(p => p.First == null ? p.Second == null : p.Second != null && p.First.SequenceEqual(p.Second)) && SequenceEqual(readLbr, sr),
+            "nested: list of byte arrays, null element and null list");
+    }
+
+    /// <summary>
+    /// A DECIMAL read as System.Decimal is exact or refused (lake(0061)): pyarrow's decimal128(38,9) values that fit read
+    /// exactly, one beyond decimal is refused naming UseBigDecimal, and a 38-digit value is refused rather than rounded.
+    /// </summary>
+    static async Task DecimalExactOrRefusedAsync() {
+        byte[] file = Resource("lake_decimal_38_9.parquet");
+        await using(ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(file))) {
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            Check(SequenceEqual(await ReadNullableAsync<decimal>(rowGroup, reader.Schema.FindDataField("d38_fits"), 5),
+                new decimal?[] { 1234567890123456789.123456789m, -0.000000001m, null, -1234567890123456789.123456789m, 0m }), "decimal(38,9) from pyarrow, exactly");
+            try {
+                await ReadNullableAsync<decimal>(rowGroup, reader.Schema.FindDataField("d38"), 5);
+                Check(false, "decimal(38,9) beyond decimal: read");
+            } catch(OverflowException e) {
+                Check(e.Message.Contains(nameof(ParquetOptions.UseBigDecimal), StringComparison.Ordinal), "decimal(38,9) beyond decimal: refused, naming UseBigDecimal");
+            }
+        }
+
+        var big = new BigDecimalDataField("d", 38, 9);
+        var value = new BigDecimal(System.Numerics.BigInteger.Parse("12345678901234567890123456789123456789"), 38, 9);
+        byte[] written = await WriteAsync(new ParquetSchema(big), new ParquetOptions(), rg => rg.WriteAsync<BigDecimal>(big, new[] { value }));
+        await using(ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(written))) {
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            try {
+                await ReadAsync<decimal>(rowGroup, reader.Schema.GetDataFields()[0], 1);
+                Check(false, "decimal(38,9) with 38 digits: rounded");
+            } catch(OverflowException) {
+                Check(true, "decimal(38,9) with 38 digits: refused");
+            }
+        }
+        await using(ParquetReader reader = await ParquetReader.CreateAsync(new MemoryStream(written), new ParquetOptions { UseBigDecimal = true })) {
+            using ParquetRowGroupReader rowGroup = reader.OpenRowGroupReader(0);
+            BigDecimal[] read = await ReadAsync<BigDecimal>(rowGroup, reader.Schema.GetDataFields()[0], 1);
+            Check(read[0].UnscaledValue == value.UnscaledValue, "decimal(38,9) with 38 digits: exact as BigDecimal");
+        }
     }
 
     static async Task<T[]> ReadAsync<T>(ParquetRowGroupReader rowGroup, DataField field, int n) where T : struct {
